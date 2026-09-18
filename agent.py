@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 
 class AutoPRAgent:
-    """Reason-Act-Observe agent with bounded conversation history."""
+    """Bounded Reason-Act-Observe agent."""
 
     def __init__(
         self,
@@ -14,47 +14,8 @@ class AutoPRAgent:
     ) -> None:
         self.llm_client = llm_client
         self.max_retries = max_retries
-
         self.history: list[dict[str, Any]] = []
         self.tools: dict[str, dict[str, Any]] = {}
-
-        self.base_prompt = """
-You are AutoPR, an autonomous software development agent.
-
-You operate in a strict Reason-Act-Observe loop.
-
-Your response MUST ALWAYS be exactly ONE valid JSON object with these keys:
-
-thought
-status
-action
-action_input
-
-Valid status values:
-
-CONTINUE
-SUCCESS
-NEEDS_INPUT
-
-CRITICAL RULES:
-
-1. Return exactly ONE JSON object.
-2. Do not output markdown.
-3. Do not output multiple JSON objects.
-4. Do not output explanations outside JSON.
-5. ONLY use tools listed in AVAILABLE TOOLS.
-6. Use tools to inspect files, modify files, execute commands,
-   and interact with external systems.
-7. After receiving a tool observation, choose the NEXT logical action.
-8. Do not repeat a successful tool call with identical arguments.
-9. Inspect files before modifying them when necessary.
-10. After modifying code, run appropriate tests.
-11. If tests fail, inspect the failure, fix the problem,
-    and test again.
-12. Do NOT declare SUCCESS merely because a file was edited.
-13. Return SUCCESS only after the requested work is actually verified.
-14. Return NEEDS_INPUT only when a genuine blocker requires human input.
-"""
 
     def register_tool(
         self,
@@ -62,39 +23,30 @@ CRITICAL RULES:
         func: Callable,
         schema: dict[str, Any],
     ) -> None:
-        """Register a tool."""
         self.tools[name] = {
             "func": func,
             "schema": schema,
         }
 
     def _build_tool_descriptions(self) -> str:
-        """Build a compact description of available tools."""
-
         lines = ["AVAILABLE TOOLS:"]
 
         for name, data in self.tools.items():
             lines.append(
-                f"- {name}: {json.dumps(data['schema'], separators=(',', ':'))}"
+                f"- {name}: "
+                f"{json.dumps(data['schema'], separators=(',', ':'))}"
             )
 
         return "\n".join(lines)
 
     def _build_recent_history(
         self,
-        max_messages: int = 8,
-        max_chars_per_message: int = 6000,
+        max_messages: int = 4,
+        max_chars_per_message: int = 3000,
     ) -> list[dict[str, str]]:
-        """
-        Keep only a small recent window of history.
-
-        This prevents the LLM prompt from growing indefinitely
-        after many tool calls.
-        """
-
         recent = self.history[-max_messages:]
 
-        compact: list[dict[str, str]] = []
+        compact = []
 
         for msg in recent:
             content = str(msg.get("content", ""))
@@ -102,7 +54,7 @@ CRITICAL RULES:
             if len(content) > max_chars_per_message:
                 content = (
                     content[:max_chars_per_message]
-                    + "\n...[observation truncated]..."
+                    + "\n...[truncated]..."
                 )
 
             compact.append(
@@ -117,22 +69,71 @@ CRITICAL RULES:
     def run(self, work_item_context: str) -> str:
         """Run the autonomous agent."""
 
-        self.history = []
-
-        self.history.append(
+        self.history = [
             {
                 "role": "user",
                 "content": work_item_context,
             }
-        )
+        ]
 
         tool_descriptions = self._build_tool_descriptions()
 
-        system_prompt = (
-            self.base_prompt
-            + "\n\n"
-            + tool_descriptions
-        )
+        system_prompt = f"""
+You are AutoPR, an autonomous software development agent.
+
+Your job is to complete the user's software task by using the available
+tools.
+
+{tool_descriptions}
+
+Follow this process:
+
+1. Understand the requested task.
+2. Inspect the repository before changing files.
+3. Read relevant documentation and repository rules.
+4. Modify only the necessary files.
+5. Add or update tests when appropriate.
+6. Run tests or other validation commands.
+7. If validation fails, fix the problem and test again.
+8. For a real GitHub task, create a branch, commit changes, push the
+   branch, and create the pull request.
+9. Do not claim success until the work has been validated.
+
+IMPORTANT:
+
+Return exactly one JSON object.
+
+The JSON object must contain exactly these fields:
+
+reason
+status
+action
+action_input
+
+The "reason" field must contain only a short one-sentence explanation
+of the next action. Do not provide private chain-of-thought or detailed
+internal reasoning.
+
+Valid status values:
+
+CONTINUE
+SUCCESS
+NEEDS_INPUT
+
+If status is CONTINUE:
+- action must be one of the available tools.
+- action_input must be an object.
+
+If status is SUCCESS:
+- action must be an empty string.
+- action_input must be an empty object.
+
+If status is NEEDS_INPUT:
+- action must be an empty string.
+- action_input must be an empty object.
+
+Return JSON only. No markdown. No text outside the JSON object.
+"""
 
         print(
             f"[AGENT] Starting task. "
@@ -146,10 +147,6 @@ CRITICAL RULES:
                 f"{iteration}/{self.max_retries}"
             )
 
-            # --------------------------------------------------
-            # REASON
-            # --------------------------------------------------
-
             recent_history = self._build_recent_history()
 
             raw_response = self.llm_client.generate(
@@ -162,21 +159,7 @@ CRITICAL RULES:
                 f"{raw_response}"
             )
 
-            # Save assistant response.
-            self.history.append(
-                {
-                    "role": "assistant",
-                    "content": raw_response,
-                }
-            )
-
-            # --------------------------------------------------
-            # PARSE
-            # --------------------------------------------------
-
-            decision = self._parse_llm_response(
-                raw_response
-            )
+            decision = self._parse_llm_response(raw_response)
 
             if decision.get("status") == "ERROR":
 
@@ -194,17 +177,14 @@ CRITICAL RULES:
                     {
                         "role": "user",
                         "content": (
-                            "Observation: "
-                            + message
+                            "The previous response was invalid. "
+                            "Return a valid JSON object with the "
+                            "required fields."
                         ),
                     }
                 )
 
                 continue
-
-            # --------------------------------------------------
-            # TERMINAL STATES
-            # --------------------------------------------------
 
             status = decision.get("status")
 
@@ -217,7 +197,7 @@ CRITICAL RULES:
                 return (
                     "SUCCESS: "
                     + decision.get(
-                        "thought",
+                        "reason",
                         "Task complete.",
                     )
                 )
@@ -227,17 +207,12 @@ CRITICAL RULES:
                 return (
                     "NEEDS_INPUT: "
                     + decision.get(
-                        "thought",
+                        "reason",
                         "Human input required.",
                     )
                 )
 
-            # --------------------------------------------------
-            # ACT
-            # --------------------------------------------------
-
             tool_name = decision.get("action")
-
             tool_args = decision.get(
                 "action_input",
                 {},
@@ -246,9 +221,8 @@ CRITICAL RULES:
             if not tool_name:
 
                 observation = (
-                    "System Error: action cannot be "
-                    "empty unless status is SUCCESS "
-                    "or NEEDS_INPUT."
+                    "System Error: action cannot be empty "
+                    "when status is CONTINUE."
                 )
 
                 print(
@@ -258,10 +232,7 @@ CRITICAL RULES:
                 self.history.append(
                     {
                         "role": "user",
-                        "content": (
-                            "Observation: "
-                            + observation
-                        ),
+                        "content": observation,
                     }
                 )
 
@@ -275,10 +246,6 @@ CRITICAL RULES:
                 f"[AGENT] Arguments: {tool_args}"
             )
 
-            # --------------------------------------------------
-            # EXECUTE TOOL
-            # --------------------------------------------------
-
             observation = self._execute_tool(
                 tool_name,
                 tool_args,
@@ -289,15 +256,18 @@ CRITICAL RULES:
                 f"{observation}"
             )
 
-            # --------------------------------------------------
-            # OBSERVE
-            # --------------------------------------------------
+            self.history.append(
+                {
+                    "role": "assistant",
+                    "content": raw_response,
+                }
+            )
 
             self.history.append(
                 {
                     "role": "user",
                     "content": (
-                        f"Observation from {tool_name}:\n"
+                        f"Tool result from {tool_name}:\n"
                         f"{observation}"
                     ),
                 }
@@ -314,23 +284,17 @@ CRITICAL RULES:
         tool_name: str,
         tool_args: dict[str, Any],
     ) -> str:
-        """Execute a registered tool safely."""
 
         if tool_name not in self.tools:
-
             return (
                 f"Error: Tool '{tool_name}' "
-                f"is not registered.\n"
+                f"is not registered. "
                 f"Available tools: "
                 f"{list(self.tools.keys())}"
             )
 
         try:
-
-            if not isinstance(
-                tool_args,
-                dict,
-            ):
+            if not isinstance(tool_args, dict):
                 tool_args = {}
 
             result = self.tools[
@@ -340,7 +304,6 @@ CRITICAL RULES:
             return str(result)
 
         except Exception as exc:
-
             return (
                 f"Execution Error in "
                 f"{tool_name}: {exc}"
@@ -350,10 +313,8 @@ CRITICAL RULES:
         self,
         response: str,
     ) -> dict[str, Any]:
-        """Parse exactly the first valid JSON object."""
 
         try:
-
             cleaned = response.strip()
 
             if not cleaned:
@@ -361,7 +322,6 @@ CRITICAL RULES:
                     "LLM returned an empty response."
                 )
 
-            # Remove markdown fences if present.
             if "```json" in cleaned:
                 cleaned = (
                     cleaned
@@ -374,7 +334,6 @@ CRITICAL RULES:
                     .split("```", 1)[0]
                 )
 
-            # Find the first JSON object.
             start = cleaned.find("{")
 
             if start == -1:
@@ -388,16 +347,13 @@ CRITICAL RULES:
                 cleaned[start:]
             )
 
-            if not isinstance(
-                decision,
-                dict,
-            ):
+            if not isinstance(decision, dict):
                 raise ValueError(
                     "LLM response was not a JSON object."
                 )
 
             required_keys = {
-                "thought",
+                "reason",
                 "status",
                 "action",
                 "action_input",
@@ -409,7 +365,6 @@ CRITICAL RULES:
             )
 
             if missing:
-
                 return {
                     "status": "ERROR",
                     "message": (
@@ -425,7 +380,6 @@ CRITICAL RULES:
             }
 
             if decision["status"] not in valid_statuses:
-
                 return {
                     "status": "ERROR",
                     "message": (
@@ -438,13 +392,25 @@ CRITICAL RULES:
                 decision["action_input"],
                 dict,
             ):
-
                 return {
                     "status": "ERROR",
                     "message": (
                         "action_input must be a dictionary."
                     ),
                 }
+
+            if decision["status"] == "CONTINUE":
+                if not decision["action"]:
+                    return {
+                        "status": "ERROR",
+                        "message": (
+                            "CONTINUE requires an action."
+                        ),
+                    }
+
+            else:
+                decision["action"] = ""
+                decision["action_input"] = {}
 
             return decision
 
