@@ -66,365 +66,231 @@ class AutoPRAgent:
 
         return compact
 
-    def run(self, work_item_context: str) -> str:
-        """Run the autonomous agent."""
+    def _build_system_prompt(self) -> str:
+        tools = self._build_tool_descriptions()
 
+        return f"""
+You are AutoPR, an autonomous coding agent.
+
+Your job is to modify the repository to satisfy the user's coding task.
+
+Use the available tools to:
+1. Inspect the repository.
+2. Understand the requested change.
+3. Modify the necessary files.
+4. Run tests when appropriate.
+5. Fix failures if needed.
+6. Finish only when the task is complete.
+
+Return ONLY valid JSON.
+
+The JSON MUST contain exactly these four fields:
+
+{{
+  "thought": "short summary of the next action",
+  "status": "CONTINUE or DONE or NEEDS_INPUT",
+  "action": "tool name or empty string",
+  "action_input": {{}}
+}}
+
+Rules:
+- "thought" must be brief.
+- "status" must be one of CONTINUE, DONE, or NEEDS_INPUT.
+- "action" must be the name of an available tool, or "" when finished.
+- "action_input" must contain the arguments for the selected tool.
+- Do not include markdown.
+- Do not include code fences.
+- Do not include extra JSON fields.
+
+{tools}
+""".strip()
+
+    def _parse_llm_response(
+        self,
+        response: str,
+    ) -> dict[str, Any]:
+        try:
+            decision = json.loads(response)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"LLM response is not valid JSON: {exc}"
+            ) from exc
+
+        if not isinstance(decision, dict):
+            raise ValueError("LLM response must be a JSON object.")
+
+        required_keys = {
+            "thought",
+            "status",
+            "action",
+            "action_input",
+        }
+
+        missing = required_keys - set(decision.keys())
+
+        if missing:
+            raise ValueError(
+                "LLM JSON is missing keys: "
+                + ", ".join(sorted(missing))
+            )
+
+        if decision["status"] not in {
+            "CONTINUE",
+            "DONE",
+            "NEEDS_INPUT",
+        }:
+            raise ValueError(
+                "Invalid status: "
+                + str(decision["status"])
+            )
+
+        if not isinstance(decision["action"], str):
+            raise ValueError("action must be a string.")
+
+        if not isinstance(decision["action_input"], dict):
+            raise ValueError("action_input must be an object.")
+
+        return decision
+
+    def run(
+        self,
+        initial_prompt: str,
+    ) -> dict[str, Any]:
         self.history = [
             {
                 "role": "user",
-                "content": work_item_context,
+                "content": initial_prompt,
             }
         ]
 
-        tool_descriptions = self._build_tool_descriptions()
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                system_prompt = self._build_system_prompt()
 
-        system_prompt = f"""
-You are AutoPR, an autonomous software development agent.
+                recent_history = self._build_recent_history()
 
-Your job is to complete the user's software task by using the available
-tools.
-
-{tool_descriptions}
-
-Follow this process:
-
-1. Understand the requested task.
-2. Inspect the repository before changing files.
-3. Read relevant documentation and repository rules.
-4. Modify only the necessary files.
-5. Add or update tests when appropriate.
-6. Run tests or other validation commands.
-7. If validation fails, fix the problem and test again.
-8. For a real GitHub task, create a branch, commit changes, push the
-   branch, and create the pull request.
-9. Do not claim success until the work has been validated.
-
-IMPORTANT:
-
-Return exactly one JSON object.
-
-The JSON object must contain exactly these fields:
-
-reason
-status
-action
-action_input
-
-The "reason" field must contain only a short one-sentence explanation
-of the next action. Do not provide private chain-of-thought or detailed
-internal reasoning.
-
-Valid status values:
-
-CONTINUE
-SUCCESS
-NEEDS_INPUT
-
-If status is CONTINUE:
-- action must be one of the available tools.
-- action_input must be an object.
-
-If status is SUCCESS:
-- action must be an empty string.
-- action_input must be an empty object.
-
-If status is NEEDS_INPUT:
-- action must be an empty string.
-- action_input must be an empty object.
-
-Return JSON only. No markdown. No text outside the JSON object.
-"""
-
-        print(
-            f"[AGENT] Starting task. "
-            f"Maximum iterations: {self.max_retries}"
-        )
-
-        for iteration in range(1, self.max_retries + 1):
-
-            print(
-                f"\n[AGENT] Iteration "
-                f"{iteration}/{self.max_retries}"
-            )
-
-            recent_history = self._build_recent_history()
-
-            raw_response = self.llm_client.generate(
-                system_prompt,
-                recent_history,
-            )
-
-            print(
-                f"[AGENT] LLM response:\n"
-                f"{raw_response}"
-            )
-
-            decision = self._parse_llm_response(raw_response)
-
-            if decision.get("status") == "ERROR":
-
-                message = decision.get(
-                    "message",
-                    "Unknown LLM error.",
+                response = self.llm_client.generate(
+                    system_prompt,
+                    recent_history,
                 )
 
-                print(
-                    f"[AGENT] Invalid LLM response: "
-                    f"{message}"
+                decision = self._parse_llm_response(response)
+
+            except Exception as exc:
+                error_message = (
+                    f"LLM error: {str(exc)}"
+                )
+
+                self.history.append(
+                    {
+                        "role": "user",
+                        "content": error_message,
+                    }
+                )
+
+                if attempt >= self.max_retries:
+                    return {
+                        "thought": error_message,
+                        "status": "NEEDS_INPUT",
+                        "action": "",
+                        "action_input": {},
+                    }
+
+                continue
+
+            thought = str(
+                decision.get(
+                    "thought",
+                    "Continuing the task.",
+                )
+            )
+
+            status = decision["status"]
+            action = decision["action"]
+            action_input = decision["action_input"]
+
+            if status == "DONE":
+                return {
+                    "thought": thought,
+                    "status": "DONE",
+                    "action": "",
+                    "action_input": {},
+                }
+
+            if status == "NEEDS_INPUT":
+                return {
+                    "thought": thought,
+                    "status": "NEEDS_INPUT",
+                    "action": action,
+                    "action_input": action_input,
+                }
+
+            if not action:
+                self.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "No action was provided. "
+                            "Choose an available tool or mark the task DONE."
+                        ),
+                    }
+                )
+                continue
+
+            if action not in self.tools:
+                self.history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Unknown tool '{action}'. "
+                            "Choose one of the available tools."
+                        ),
+                    }
+                )
+                continue
+
+            try:
+                tool = self.tools[action]["func"]
+                result = tool(**action_input)
+
+                self.history.append(
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "thought": thought,
+                                "status": status,
+                                "action": action,
+                                "action_input": action_input,
+                            }
+                        ),
+                    }
                 )
 
                 self.history.append(
                     {
                         "role": "user",
                         "content": (
-                            "The previous response was invalid. "
-                            "Return a valid JSON object with the "
-                            "required fields."
+                            f"Tool '{action}' result:\n"
+                            f"{result}"
                         ),
                     }
                 )
 
-                continue
-
-            status = decision.get("status")
-
-            if status == "SUCCESS":
-
-                print(
-                    "[AGENT] Task completed successfully."
-                )
-
-                return (
-                    "SUCCESS: "
-                    + decision.get(
-                        "reason",
-                        "Task complete.",
-                    )
-                )
-
-            if status == "NEEDS_INPUT":
-
-                return (
-                    "NEEDS_INPUT: "
-                    + decision.get(
-                        "reason",
-                        "Human input required.",
-                    )
-                )
-
-            tool_name = decision.get("action")
-            tool_args = decision.get(
-                "action_input",
-                {},
-            )
-
-            if not tool_name:
-
-                observation = (
-                    "System Error: action cannot be empty "
-                    "when status is CONTINUE."
-                )
-
-                print(
-                    f"[AGENT] {observation}"
-                )
-
+            except Exception as exc:
                 self.history.append(
                     {
                         "role": "user",
-                        "content": observation,
-                    }
-                )
-
-                continue
-
-            print(
-                f"[AGENT] Action: {tool_name}"
-            )
-
-            print(
-                f"[AGENT] Arguments: {tool_args}"
-            )
-
-            observation = self._execute_tool(
-                tool_name,
-                tool_args,
-            )
-
-            print(
-                f"[AGENT] Observation:\n"
-                f"{observation}"
-            )
-
-            self.history.append(
-                {
-                    "role": "assistant",
-                    "content": raw_response,
-                }
-            )
-
-            self.history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"Tool result from {tool_name}:\n"
-                        f"{observation}"
-                    ),
-                }
-            )
-
-        return (
-            "MAX_RETRIES_REACHED: "
-            "Agent reached the maximum number of "
-            "Reason-Act-Observe iterations."
-        )
-
-    def _execute_tool(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-    ) -> str:
-
-        if tool_name not in self.tools:
-            return (
-                f"Error: Tool '{tool_name}' "
-                f"is not registered. "
-                f"Available tools: "
-                f"{list(self.tools.keys())}"
-            )
-
-        try:
-            if not isinstance(tool_args, dict):
-                tool_args = {}
-
-            result = self.tools[
-                tool_name
-            ]["func"](**tool_args)
-
-            return str(result)
-
-        except Exception as exc:
-            return (
-                f"Execution Error in "
-                f"{tool_name}: {exc}"
-            )
-
-    def _parse_llm_response(
-        self,
-        response: str,
-    ) -> dict[str, Any]:
-
-        try:
-            cleaned = response.strip()
-
-            if not cleaned:
-                raise ValueError(
-                    "LLM returned an empty response."
-                )
-
-            if "```json" in cleaned:
-                cleaned = (
-                    cleaned
-                    .split("```json", 1)[1]
-                )
-
-            if "```" in cleaned:
-                cleaned = (
-                    cleaned
-                    .split("```", 1)[0]
-                )
-
-            start = cleaned.find("{")
-
-            if start == -1:
-                raise ValueError(
-                    "No JSON object found."
-                )
-
-            decoder = json.JSONDecoder()
-
-            decision, _ = decoder.raw_decode(
-                cleaned[start:]
-            )
-
-            if not isinstance(decision, dict):
-                raise ValueError(
-                    "LLM response was not a JSON object."
-                )
-
-            required_keys = {
-                "reason",
-                "status",
-                "action",
-                "action_input",
-            }
-
-            missing = (
-                required_keys
-                - set(decision.keys())
-            )
-
-            if missing:
-                return {
-                    "status": "ERROR",
-                    "message": (
-                        "LLM JSON is missing keys: "
-                        + ", ".join(sorted(missing))
-                    ),
-                }
-
-            valid_statuses = {
-                "CONTINUE",
-                "SUCCESS",
-                "NEEDS_INPUT",
-            }
-
-            if decision["status"] not in valid_statuses:
-                return {
-                    "status": "ERROR",
-                    "message": (
-                        "Invalid status: "
-                        + str(decision["status"])
-                    ),
-                }
-
-            if not isinstance(
-                decision["action_input"],
-                dict,
-            ):
-                return {
-                    "status": "ERROR",
-                    "message": (
-                        "action_input must be a dictionary."
-                    ),
-                }
-
-            if decision["status"] == "CONTINUE":
-                if not decision["action"]:
-                    return {
-                        "status": "ERROR",
-                        "message": (
-                            "CONTINUE requires an action."
+                        "content": (
+                            f"Tool '{action}' failed:\n"
+                            f"{exc}"
                         ),
                     }
+                )
 
-            else:
-                decision["action"] = ""
-                decision["action_input"] = {}
-
-            return decision
-
-        except (
-            json.JSONDecodeError,
-            IndexError,
-            TypeError,
-            ValueError,
-        ) as exc:
-
-            return {
-                "status": "ERROR",
-                "message": (
-                    "LLM output could not be parsed: "
-                    + str(exc)
-                ),
-            }
+        return {
+            "thought": "Maximum retry limit reached.",
+            "status": "NEEDS_INPUT",
+            "action": "",
+            "action_input": {},
+        }
