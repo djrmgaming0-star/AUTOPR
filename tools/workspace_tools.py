@@ -87,7 +87,6 @@ def run_command(command: str) -> dict:
         )
 
     try:
-
         result = subprocess.run(
             command,
             cwd=WORKSPACE,
@@ -107,7 +106,6 @@ def run_command(command: str) -> dict:
         }
 
     except subprocess.TimeoutExpired as exc:
-
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
 
@@ -208,7 +206,6 @@ def commit_changes(
     )
 
     if add_result.returncode != 0:
-
         return {
             "operation": "commit_changes",
             "workspace": str(WORKSPACE),

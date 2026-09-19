@@ -303,8 +303,8 @@ class AutoPRAgent:
             # -------------------------------------------------
 
             "commit_changes": {
-                "commit_message": "message",
-                "msg": "message",
+                "message": "commit_message",
+                "msg": "commit_message",
             },
 
             # -------------------------------------------------
@@ -333,7 +333,7 @@ class AutoPRAgent:
                 "source_branch": "branch_name",
                 "head": "branch_name",
 
-                "target_branch": "base",
+                "target_branch": "base_branch",
             },
 
             # -------------------------------------------------
@@ -484,9 +484,42 @@ class AutoPRAgent:
             f"[TOOL] {action}({json.dumps(normalized_input, ensure_ascii=False)})"
         )
 
-        return tool(
-            **normalized_input
-        )
+        try:
+            return tool(
+                **normalized_input
+            )
+        except Exception as exc:
+            # GitHub returns 422 when a PR already exists for the
+            # requested head branch. Treat that as a successful
+            # end-state because the PR is already present.
+            if (
+                action == "create_pull_request"
+                and "pull request already exists" in str(exc).lower()
+            ):
+                self.has_created_pr = True
+
+                existing_result = {
+                    "operation": "create_pull_request",
+                    "success": True,
+                    "already_exists": True,
+                    "message": str(exc),
+                    "branch_name": normalized_input.get(
+                        "branch_name"
+                    ),
+                    "base_branch": normalized_input.get(
+                        "base_branch",
+                        "main",
+                    ),
+                }
+
+                print(
+                    "[GITHUB] Pull request already exists; "
+                    "treating it as the completed PR state."
+                )
+
+                return existing_result
+
+            raise
 
     # =========================================================
     # RUNTIME GUIDANCE
@@ -593,9 +626,12 @@ If a Git operation fails because of an argument mismatch,
 correct the registered tool arguments and retry the same
 registered tool.
 
+The exact registered arguments are:
+- commit_changes: commit_message
+- create_pull_request: repo_name, branch_name, title, body, base_branch
+
 Do NOT replace commit_changes or create_pull_request with
-raw git commands unless the registered tool itself is
-unavailable.
+raw git commands or raw GitHub API requests.
 """.strip()
 
     # =========================================================
@@ -751,7 +787,7 @@ If commit_changes fails:
 1. Read the exact error.
 2. Inspect the registered signature/schema already
    provided above.
-3. Correct the argument.
+3. Use the exact argument name "commit_message".
 4. Retry commit_changes.
 
 Do NOT use raw git commit commands to bypass the tool.
@@ -759,8 +795,12 @@ Do NOT use raw git commit commands to bypass the tool.
 If create_pull_request fails:
 
 1. Read the exact error.
-2. Correct the argument.
+2. Use the exact registered arguments:
+   repo_name, branch_name, title, body, base_branch.
 3. Retry create_pull_request.
+4. If GitHub explicitly reports that a pull request already
+   exists for the branch, treat that existing PR as the
+   completed PR state and continue with the work-item comment.
 
 Do NOT use a raw GitHub API request to bypass the tool.
 

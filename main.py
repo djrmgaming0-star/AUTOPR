@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from agent import AutoPRAgent
 from gemini_client import GeminiClient
+from mcp_client import search_knowledge_via_mcp
 
 from tools.github_tools import (
     add_issue_comment,
@@ -38,6 +39,7 @@ load_dotenv()
 # ============================================================
 # TOOL SCHEMAS
 # ============================================================
+
 
 def build_tool_schemas():
     """
@@ -115,17 +117,23 @@ def build_tool_schemas():
             "required": ["branch_name"],
         },
 
+        # ====================================================
+        # FIXED: commit_changes schema
+        # ====================================================
+
         "commit_changes": {
             "type": "object",
             "properties": {
-                "message": {
+                "commit_message": {
                     "type": "string",
                     "description": (
                         "Git commit message."
                     ),
                 }
             },
-            "required": ["message"],
+            "required": [
+                "commit_message"
+            ],
         },
 
         "push_branch": {
@@ -226,12 +234,38 @@ def build_tool_schemas():
             },
             "required": ["message"],
         },
+
+        # ====================================================
+        # MCP + RAG TOOL
+        # ====================================================
+
+        "search_knowledge": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Question or topic to search in the "
+                        "AutoPR knowledge base through MCP."
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": (
+                        "Number of relevant knowledge chunks "
+                        "to retrieve."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
     }
 
 
 # ============================================================
 # MAIN
 # ============================================================
+
 
 def main():
 
@@ -427,6 +461,16 @@ def main():
     )
 
     # ========================================================
+    # REGISTER MCP + RAG
+    # ========================================================
+
+    agent.register_tool(
+        "search_knowledge",
+        search_knowledge_via_mcp,
+        schemas["search_knowledge"],
+    )
+
+    # ========================================================
     # SHOW REGISTERED TOOLS
     # ========================================================
 
@@ -615,21 +659,43 @@ REQUIRED WORKFLOW
 3. Read repo_rules.md.
 4. Read BRD.md if present.
 5. Understand the GitHub issue.
-6. Inspect relevant source files.
-7. Inspect existing tests.
-8. Implement the requested feature.
-9. Add/update tests when required.
-10. Run repository validation.
-11. Analyze failures.
-12. Fix failures.
-13. Re-run validation.
-14. Create a feature branch.
-15. Commit changes.
-16. Push branch.
-17. Create GitHub pull request.
-18. Comment on the GitHub issue.
-19. Finish with DONE only after the work is actually
+6. Use search_knowledge when repository rules,
+   coding standards, testing rules, architecture,
+   or previous PR patterns are relevant.
+7. Inspect relevant source files.
+8. Inspect existing tests.
+9. Implement the requested feature.
+10. Add/update tests when required.
+11. Run repository validation.
+12. Analyze failures.
+13. Fix failures.
+14. Re-run validation.
+15. Create a feature branch.
+16. Commit changes using the commit_changes tool.
+   IMPORTANT: The required argument is "commit_message".
+17. Push branch.
+18. Create GitHub pull request.
+19. Comment on the GitHub issue.
+20. Finish with DONE only after the work is actually
     implemented and validated.
+
+=========================================================
+KNOWLEDGE / MCP
+=========================================================
+
+The search_knowledge tool is backed by the AutoPR
+Model Context Protocol (MCP) server.
+
+When repository knowledge is required:
+
+1. Call search_knowledge.
+2. MCP routes the request to the AutoPR MCP server.
+3. The MCP server invokes the RAG retriever.
+4. RAG searches the AutoPR knowledge base.
+5. Use the retrieved context when making implementation
+   decisions.
+
+Do not bypass MCP for knowledge retrieval.
 
 =========================================================
 IMPORTANT
@@ -638,6 +704,10 @@ IMPORTANT
 Do NOT spend all attempts only reading files.
 
 After sufficient inspection, IMPLEMENT the requested change.
+
+Use search_knowledge to retrieve relevant knowledge
+from the AutoPR knowledge base before making decisions
+about repository conventions.
 
 Do not invent test results.
 
@@ -735,6 +805,7 @@ not a simulated result.
 # ============================================================
 # ENTRY POINT
 # ============================================================
+
 
 if __name__ == "__main__":
     main()
