@@ -33,138 +33,18 @@ from tools.workspace_tools import (
 # ============================================================
 
 load_dotenv()
-def build_tool_schemas():
-    return {
-        "read_file": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "Repository-relative file name."
-                }
-            },
-            "required": ["filename"],
-        },
-        "write_file": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "Repository-relative file name."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Complete content to write."
-                },
-            },
-            "required": ["filename", "content"],
-        },
-        "list_files": {
-            "type": "object",
-            "properties": {},
-        },
-        "run_command": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Command to run in the repository."
-                }
-            },
-            "required": ["command"],
-        },
-        "create_branch": {
-            "type": "object",
-            "properties": {
-                "branch_name": {
-                    "type": "string",
-                    "description": "Git branch name."
-                }
-            },
-            "required": ["branch_name"],
-        },
-        "commit_changes": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "Git commit message."
-                }
-            },
-            "required": ["message"],
-        },
-        "push_branch": {
-            "type": "object",
-            "properties": {
-                "branch_name": {
-                    "type": "string",
-                    "description": "Branch to push."
-                }
-            },
-            "required": ["branch_name"],
-        },
-        "get_issue_details": {
-            "type": "object",
-            "properties": {
-                "repo_name": {
-                    "type": "string"
-                },
-                "issue_number": {
-                    "type": "integer"
-                },
-            },
-            "required": ["repo_name", "issue_number"],
-        },
-        "create_pull_request": {
-            "type": "object",
-            "properties": {
-                "repo_name": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "head": {"type": "string"},
-                "base": {"type": "string"},
-            },
-            "required": [
-                "repo_name",
-                "title",
-                "body",
-                "head",
-                "base",
-            ],
-        },
-        "add_issue_comment": {
-            "type": "object",
-            "properties": {
-                "repo_name": {"type": "string"},
-                "issue_number": {"type": "integer"},
-                "comment": {"type": "string"},
-            },
-            "required": [
-                "repo_name",
-                "issue_number",
-                "comment",
-            ],
-        },
-        "send_slack_notification": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string"}
-            },
-            "required": ["message"],
-        },
-    }
 
 
 # ============================================================
-# HELPER: BUILD TOOL SCHEMAS
+# TOOL SCHEMAS
 # ============================================================
 
 def build_tool_schemas():
     """
-    Explicit Gemini schemas for every registered tool.
+    Exact JSON schemas exposed to Gemini.
 
-    The parameter names here MUST match the actual Python
-    function signatures in the tools modules.
+    These schemas intentionally match the actual Python
+    function signatures used by AutoPR.
     """
 
     return {
@@ -175,10 +55,9 @@ def build_tool_schemas():
                     "type": "string",
                     "description": (
                         "Repository-relative file name, "
-                        "for example calculator.py or "
-                        "tests/test_calculator.py."
+                        "for example calculator.py."
                     ),
-                },
+                }
             },
             "required": ["filename"],
         },
@@ -189,13 +68,13 @@ def build_tool_schemas():
                 "filename": {
                     "type": "string",
                     "description": (
-                        "Repository-relative file name to write."
+                        "Repository-relative file name."
                     ),
                 },
                 "content": {
                     "type": "string",
                     "description": (
-                        "Complete file content to write."
+                        "Complete content to write."
                     ),
                 },
             },
@@ -216,10 +95,9 @@ def build_tool_schemas():
                 "command": {
                     "type": "string",
                     "description": (
-                        "Shell command to run in the repository "
-                        "workspace."
+                        "Command to run in the repository."
                     ),
-                },
+                }
             },
             "required": ["command"],
         },
@@ -230,9 +108,9 @@ def build_tool_schemas():
                 "branch_name": {
                     "type": "string",
                     "description": (
-                        "Name of the feature branch to create."
+                        "Git branch name."
                     ),
-                },
+                }
             },
             "required": ["branch_name"],
         },
@@ -245,7 +123,7 @@ def build_tool_schemas():
                     "description": (
                         "Git commit message."
                     ),
-                },
+                }
             },
             "required": ["message"],
         },
@@ -256,9 +134,9 @@ def build_tool_schemas():
                 "branch_name": {
                     "type": "string",
                     "description": (
-                        "Branch name to push to origin."
+                        "Branch to push."
                     ),
-                },
+                }
             },
             "required": ["branch_name"],
         },
@@ -290,32 +168,23 @@ def build_tool_schemas():
             "properties": {
                 "repo_name": {
                     "type": "string",
-                    "description": (
-                        "GitHub repository in owner/name format."
-                    ),
                 },
                 "title": {
                     "type": "string",
-                    "description": (
-                        "Pull request title."
-                    ),
                 },
                 "body": {
                     "type": "string",
-                    "description": (
-                        "Pull request description."
-                    ),
                 },
                 "head": {
                     "type": "string",
                     "description": (
-                        "Source branch containing the changes."
+                        "Source branch."
                     ),
                 },
                 "base": {
                     "type": "string",
                     "description": (
-                        "Target branch, normally main."
+                        "Target branch."
                     ),
                 },
             },
@@ -333,21 +202,12 @@ def build_tool_schemas():
             "properties": {
                 "repo_name": {
                     "type": "string",
-                    "description": (
-                        "GitHub repository in owner/name format."
-                    ),
                 },
                 "issue_number": {
                     "type": "integer",
-                    "description": (
-                        "GitHub issue number."
-                    ),
                 },
                 "comment": {
                     "type": "string",
-                    "description": (
-                        "Comment to add to the issue."
-                    ),
                 },
             },
             "required": [
@@ -362,10 +222,7 @@ def build_tool_schemas():
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": (
-                        "Message to send to Slack."
-                    ),
-                },
+                }
             },
             "required": ["message"],
         },
@@ -377,6 +234,7 @@ def build_tool_schemas():
 # ============================================================
 
 def main():
+
     print("=" * 60)
     print("        AUTOPR MASTER AGENT")
     print("        Gemini 3.5 Flash-Lite")
@@ -386,9 +244,18 @@ def main():
     # ENVIRONMENT VARIABLES
     # ========================================================
 
-    workspace = os.getenv("AUTOPR_WORKSPACE")
-    github_repo = os.getenv("GITHUB_REPO")
-    work_item_id = os.getenv("WORK_ITEM_ID")
+    workspace = os.getenv(
+        "AUTOPR_WORKSPACE"
+    )
+
+    github_repo = os.getenv(
+        "GITHUB_REPO"
+    )
+
+    work_item_id = os.getenv(
+        "WORK_ITEM_ID"
+    )
+
     base_branch = os.getenv(
         "BASE_BRANCH",
         "main",
@@ -410,8 +277,12 @@ def main():
         )
 
     try:
-        issue_number = int(work_item_id)
+        issue_number = int(
+            work_item_id
+        )
+
     except ValueError as exc:
+
         raise RuntimeError(
             "WORK_ITEM_ID must be a GitHub issue number."
         ) from exc
@@ -436,7 +307,7 @@ def main():
     )
 
     # ========================================================
-    # GEMINI CLIENT
+    # GEMINI
     # ========================================================
 
     print()
@@ -455,7 +326,7 @@ def main():
     )
 
     llm_client = GeminiClient(
-        model=gemini_model,
+        model=gemini_model
     )
 
     print(
@@ -463,16 +334,16 @@ def main():
     )
 
     # ========================================================
-    # CREATE AGENT
+    # AGENT
     # ========================================================
 
     agent = AutoPRAgent(
         llm_client=llm_client,
-        max_retries=15,
+        max_retries=25,
     )
 
     # ========================================================
-    # TOOL SCHEMAS
+    # SCHEMAS
     # ========================================================
 
     schemas = build_tool_schemas()
@@ -546,7 +417,7 @@ def main():
     )
 
     # ========================================================
-    # REGISTER SLACK TOOL
+    # REGISTER SLACK
     # ========================================================
 
     agent.register_tool(
@@ -570,7 +441,7 @@ def main():
         )
 
     # ========================================================
-    # GET GITHUB ISSUE
+    # GET ISSUE
     # ========================================================
 
     print()
@@ -579,26 +450,30 @@ def main():
     )
 
     try:
+
         issue = get_issue_details(
             github_repo,
             issue_number,
         )
 
     except Exception as exc:
+
         print(
             "[ERROR] Could not retrieve "
             f"issue: {exc}"
         )
+
         raise
 
     # ========================================================
-    # EXTRACT ISSUE INFORMATION
+    # ISSUE INFORMATION
     # ========================================================
 
     if isinstance(
         issue,
         dict,
     ):
+
         issue_title = str(
             issue.get(
                 "title",
@@ -614,8 +489,12 @@ def main():
         )
 
     else:
+
         issue_title = ""
-        issue_body = str(issue)
+
+        issue_body = str(
+            issue
+        )
 
     print(
         f"[ISSUE] Title: "
@@ -628,7 +507,7 @@ def main():
     )
 
     # ========================================================
-    # READ REPOSITORY RULES
+    # REPOSITORY RULES
     # ========================================================
 
     repo_rules = ""
@@ -639,7 +518,9 @@ def main():
     )
 
     if rules_path.exists():
+
         try:
+
             repo_rules = (
                 rules_path.read_text(
                     encoding="utf-8"
@@ -651,18 +532,20 @@ def main():
             )
 
         except Exception as exc:
+
             print(
                 "[WARN] Could not read "
                 f"repo_rules.md: {exc}"
             )
 
     else:
+
         print(
             "[SYSTEM] No repo_rules.md found."
         )
 
     # ========================================================
-    # READ BRD IF PRESENT
+    # BRD
     # ========================================================
 
     brd = ""
@@ -673,7 +556,9 @@ def main():
     )
 
     if brd_path.exists():
+
         try:
+
             brd = (
                 brd_path.read_text(
                     encoding="utf-8"
@@ -685,13 +570,14 @@ def main():
             )
 
         except Exception as exc:
+
             print(
                 "[WARN] Could not read "
                 f"BRD.md: {exc}"
             )
 
     # ========================================================
-    # BUILD TASK PROMPT
+    # TASK PROMPT
     # ========================================================
 
     task_prompt = f"""
@@ -720,76 +606,60 @@ BUSINESS REQUIREMENTS / BRD:
 AUTOPR WORKSPACE:
 {workspace}
 
-Your workflow must be evidence-driven.
+=========================================================
+REQUIRED WORKFLOW
+=========================================================
 
-First inspect the repository before making changes.
-
-Then:
-
-1. Inspect the repository structure.
-2. Read README and relevant documentation.
-3. Read repo_rules.md if present.
+1. Inspect repository structure.
+2. Read relevant documentation.
+3. Read repo_rules.md.
 4. Read BRD.md if present.
 5. Understand the GitHub issue.
-6. Find the relevant source files.
+6. Inspect relevant source files.
 7. Inspect existing tests.
-8. Create an implementation plan internally.
-9. Modify only the required files.
-10. Add or update tests when appropriate.
-11. Run the repository's relevant validation commands.
-12. If validation fails, inspect the failure.
-13. Fix the implementation.
-14. Run validation again.
-15. Continue until validation succeeds or genuine human
-    input is required.
-16. Create a feature branch.
-17. Commit the changes.
-18. Push the branch.
-19. Create a pull request.
-20. Comment on the issue when appropriate.
+8. Implement the requested feature.
+9. Add/update tests when required.
+10. Run repository validation.
+11. Analyze failures.
+12. Fix failures.
+13. Re-run validation.
+14. Create a feature branch.
+15. Commit changes.
+16. Push branch.
+17. Create GitHub pull request.
+18. Comment on the GitHub issue.
+19. Finish with DONE only after the work is actually
+    implemented and validated.
 
-IMPORTANT TOOL RULE:
+=========================================================
+IMPORTANT
+=========================================================
 
-Use the EXACT argument names shown in AVAILABLE TOOLS.
+Do NOT spend all attempts only reading files.
 
-For example:
+After sufficient inspection, IMPLEMENT the requested change.
 
-read_file:
-{{"filename":"calculator.py"}}
+Do not invent test results.
 
-NOT:
+Do not claim validation succeeded unless a tool actually
+returned successful validation output.
 
-{{"path":"calculator.py"}}
+Do not modify unrelated files.
 
-NOT:
+Respect repo_rules.md.
 
-{{"file_path":"calculator.py"}}
+Use existing project conventions.
 
-Do not invent argument names.
+If a command fails, diagnose it and recover.
 
-IMPORTANT:
+If genuinely blocked, return NEEDS_INPUT.
 
-- Do not invent repository information.
-- Do not invent test results.
-- Do not claim validation passed unless a tool actually
-  reports success.
-- Do not modify unrelated files.
-- Follow repository rules.
-- Prefer existing project conventions.
-- Inspect before editing.
-- Use the available tools to perform actual work.
-- If a tool fails, analyze the error and recover when possible.
-- If genuinely required information is missing, return
-  NEEDS_INPUT.
-- When the implementation, validation, commit, push, and PR
-  workflow is complete, return DONE.
-
-The goal is a real repository change and a traceable GitHub PR,
+The goal is a REAL repository change and REAL GitHub PR,
 not a simulated result.
 """.strip()
 
     # ========================================================
-    # START AGENT
+    # RUN AGENT
     # ========================================================
 
     print()
@@ -803,7 +673,7 @@ not a simulated result.
     )
 
     # ========================================================
-    # AGENT RESULT
+    # RESULT
     # ========================================================
 
     print()
@@ -820,7 +690,7 @@ not a simulated result.
     )
 
     # ========================================================
-    # SLACK NOTIFICATION
+    # SLACK
     # ========================================================
 
     print()
@@ -829,6 +699,7 @@ not a simulated result.
     )
 
     try:
+
         send_slack_notification(
             json.dumps(
                 {
@@ -845,6 +716,7 @@ not a simulated result.
         )
 
     except Exception as exc:
+
         print(
             "[WARN] Slack notification failed: "
             f"{exc}"
