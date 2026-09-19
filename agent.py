@@ -481,11 +481,7 @@ class AutoPRAgent:
         tool = self.tools[action]["func"]
 
         print(
-            f"[TOOL] {action}("
-            f"{json.dumps(
-                normalized_input,
-                ensure_ascii=False
-            )})"
+            f"[TOOL] {action}({json.dumps(normalized_input, ensure_ascii=False)})"
         )
 
         return tool(
