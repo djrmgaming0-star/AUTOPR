@@ -1,366 +1,171 @@
-"""Core autonomous agent for AutoPR."""
+"""
+Gemini client for AutoPR.
 
-import json
-from typing import Any, Callable
+Uses Google's official google-genai SDK and Gemini 3.5 Flash-Lite.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from google import genai
+from google.genai import types
 
 
-class AutoPRAgent:
-    """Bounded Reason-Act-Observe agent."""
+class GeminiClient:
+    """
+    Small wrapper around the Gemini API.
+
+    AutoPRAgent only needs one method:
+
+        generate(system_prompt, history) -> str
+    """
+
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
     def __init__(
         self,
-        llm_client,
-        max_retries: int = 10,
+        model: str | None = None,
     ) -> None:
-        self.llm_client = llm_client
-        self.max_retries = max_retries
-        self.history: list[dict[str, Any]] = []
-        self.tools: dict[str, dict[str, Any]] = {}
+        api_key = os.getenv("GEMINI_API_KEY")
 
-    def register_tool(
-        self,
-        name: str,
-        func: Callable,
-        schema: dict[str, Any],
-    ) -> None:
-        self.tools[name] = {
-            "func": func,
-            "schema": schema,
-        }
-
-    def _build_tool_descriptions(self) -> str:
-        lines = ["AVAILABLE TOOLS:"]
-
-        for name, data in self.tools.items():
-            lines.append(
-                f"- {name}: "
-                f"{json.dumps(data['schema'], separators=(',', ':'))}"
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. "
+                "Add it to your local .env file."
             )
 
-        return "\n".join(lines)
-
-    def _build_recent_history(
-        self,
-        max_messages: int = 4,
-        max_chars_per_message: int = 3000,
-    ) -> list[dict[str, str]]:
-        recent = self.history[-max_messages:]
-
-        compact = []
-
-        for msg in recent:
-            content = str(msg.get("content", ""))
-
-            if len(content) > max_chars_per_message:
-                content = (
-                    content[:max_chars_per_message]
-                    + "\n...[truncated]..."
-                )
-
-            compact.append(
-                {
-                    "role": str(msg.get("role", "user")),
-                    "content": content,
-                }
+        self.model = (
+            model
+            or os.getenv(
+                "GEMINI_MODEL",
+                self.DEFAULT_MODEL,
             )
+        )
 
-        return compact
+        self.client = genai.Client(
+            api_key=api_key
+        )
 
-    def _build_system_prompt(self) -> str:
-        return f"""
-You are AutoPR, an autonomous coding agent.
-
-Complete the user's coding task by inspecting the repository,
-modifying files, running tests, and fixing failures.
-
-Available tools:
-
-{self._build_tool_descriptions()}
-
-Return ONLY valid JSON.
-
-The JSON must contain exactly these fields:
-
-{{
-  "thought": "short summary of the next action",
-  "status": "CONTINUE",
-  "action": "tool name",
-  "action_input": {{}}
-}}
-
-When the task is completely finished, return:
-
-{{
-  "thought": "short summary of completion",
-  "status": "DONE",
-  "action": "",
-  "action_input": {{}}
-}}
-
-If you cannot continue because information is genuinely missing, return:
-
-{{
-  "thought": "short explanation",
-  "status": "NEEDS_INPUT",
-  "action": "",
-  "action_input": {{}}
-}}
-
-Rules:
-- Return JSON only.
-- Do not use markdown.
-- Do not use code fences.
-- "thought" must be short.
-- "status" must be CONTINUE, DONE, or NEEDS_INPUT.
-- "action" must be an available tool name or empty.
-- "action_input" must be a JSON object.
-""".strip()
-
-    def _parse_llm_response(
+    def generate(
         self,
-        response: str,
-    ) -> dict[str, Any]:
-        try:
-            decision = json.loads(response)
-        except json.JSONDecodeError as exc:
+        system_prompt: str,
+        history: list[dict[str, str]],
+    ) -> str:
+        """
+        Send the AutoPR conversation to Gemini.
+
+        Gemini is instructed to return JSON only.
+        """
+
+        if not system_prompt:
             raise ValueError(
-                f"LLM response is not valid JSON: {exc}"
+                "system_prompt cannot be empty."
+            )
+
+        if not history:
+            raise ValueError(
+                "history cannot be empty."
+            )
+
+        conversation_parts: list[str] = []
+
+        for message in history:
+            role = str(
+                message.get("role", "user")
+            ).upper()
+
+            content = str(
+                message.get("content", "")
+            )
+
+            if not content:
+                continue
+
+            conversation_parts.append(
+                f"{role}:\n{content}"
+            )
+
+        conversation = "\n\n".join(
+            conversation_parts
+        )
+
+        if not conversation:
+            raise ValueError(
+                "Conversation history contains no content."
+            )
+
+        try:
+            response = (
+                self.client.models.generate_content(
+                    model=self.model,
+                    contents=conversation,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type="application/json",
+                        temperature=0.2,
+                        max_output_tokens=2000,
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"Gemini API request failed: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
 
-        if not isinstance(decision, dict):
-            raise ValueError(
-                "LLM response must be a JSON object."
+        text = getattr(
+            response,
+            "text",
+            None,
+        )
+
+        if not text:
+            raise RuntimeError(
+                "Gemini returned an empty response."
             )
 
-        required_keys = {
-            "thought",
-            "status",
-            "action",
-            "action_input",
-        }
+        return text.strip()
 
-        missing = required_keys - set(decision.keys())
+    def test_connection(self) -> str:
+        """
+        Simple connection test.
 
-        if missing:
-            raise ValueError(
-                "LLM JSON is missing keys: "
-                + ", ".join(sorted(missing))
-            )
+        Useful before starting the full AutoPR workflow.
+        """
 
-        if decision["status"] not in {
-            "CONTINUE",
-            "DONE",
-            "NEEDS_INPUT",
-        }:
-            raise ValueError(
-                "Invalid status: "
-                + str(decision["status"])
-            )
-
-        if not isinstance(
-            decision["action"],
-            str,
-        ):
-            raise ValueError(
-                "action must be a string."
-            )
-
-        if not isinstance(
-            decision["action_input"],
-            dict,
-        ):
-            raise ValueError(
-                "action_input must be an object."
-            )
-
-        return decision
-
-    def run(
-        self,
-        initial_prompt: str,
-    ) -> dict[str, Any]:
-        self.history = [
-            {
-                "role": "user",
-                "content": initial_prompt,
-            }
-        ]
-
-        for attempt in range(
-            1,
-            self.max_retries + 1,
-        ):
-            print(
-                f"[AGENT] Attempt {attempt}/{self.max_retries}"
-            )
-
-            try:
-                system_prompt = (
-                    self._build_system_prompt()
-                )
-
-                recent_history = (
-                    self._build_recent_history()
-                )
-
-                response = (
-                    self.llm_client.generate(
-                        system_prompt,
-                        recent_history,
-                    )
-                )
-
-                print(
-                    "[AGENT] LLM response received."
-                )
-
-                decision = (
-                    self._parse_llm_response(
-                        response
-                    )
-                )
-
-            except Exception as exc:
-                error_message = (
-                    f"LLM error: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-                print(
-                    f"[ERROR] {error_message}"
-                )
-
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": error_message,
-                    }
-                )
-
-                if attempt >= self.max_retries:
-                    return {
-                        "thought": error_message,
-                        "status": "NEEDS_INPUT",
-                        "action": "",
-                        "action_input": {},
-                    }
-
-                continue
-
-            thought = str(
-                decision.get(
-                    "thought",
-                    "Continuing the task.",
+        try:
+            response = (
+                self.client.models.generate_content(
+                    model=self.model,
+                    contents=(
+                        "Reply with exactly this word: "
+                        "CONNECTED"
+                    ),
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=20,
+                    ),
                 )
             )
 
-            status = decision["status"]
-            action = decision["action"]
-            action_input = decision["action_input"]
+        except Exception as exc:
+            raise RuntimeError(
+                f"Gemini connection test failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
-            print(
-                f"[AGENT] Status: {status}"
+        text = getattr(
+            response,
+            "text",
+            None,
+        )
+
+        if not text:
+            raise RuntimeError(
+                "Gemini connection test returned "
+                "an empty response."
             )
 
-            print(
-                f"[AGENT] Action: {action}"
-            )
-
-            if status == "DONE":
-                return {
-                    "thought": thought,
-                    "status": "DONE",
-                    "action": "",
-                    "action_input": {},
-                }
-
-            if status == "NEEDS_INPUT":
-                return {
-                    "thought": thought,
-                    "status": "NEEDS_INPUT",
-                    "action": action,
-                    "action_input": action_input,
-                }
-
-            if not action:
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "No action was provided. "
-                            "Choose an available tool."
-                        ),
-                    }
-                )
-                continue
-
-            if action not in self.tools:
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Unknown tool '{action}'. "
-                            "Choose an available tool."
-                        ),
-                    }
-                )
-                continue
-
-            try:
-                tool = self.tools[action]["func"]
-
-                result = tool(
-                    **action_input
-                )
-
-                print(
-                    f"[AGENT] Tool '{action}' completed."
-                )
-
-                self.history.append(
-                    {
-                        "role": "assistant",
-                        "content": json.dumps(
-                            {
-                                "thought": thought,
-                                "status": status,
-                                "action": action,
-                                "action_input": action_input,
-                            }
-                        ),
-                    }
-                )
-
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Tool '{action}' result:\n"
-                            f"{result}"
-                        ),
-                    }
-                )
-
-            except Exception as exc:
-                error_message = (
-                    f"Tool '{action}' failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-                print(
-                    f"[ERROR] {error_message}"
-                )
-
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": error_message,
-                    }
-                )
-
-        return {
-            "thought": "Maximum retry limit reached.",
-            "status": "NEEDS_INPUT",
-            "action": "",
-            "action_input": {},
-        }
+        return text.strip()
