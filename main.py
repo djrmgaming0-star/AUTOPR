@@ -33,6 +33,126 @@ from tools.workspace_tools import (
 # ============================================================
 
 load_dotenv()
+def build_tool_schemas():
+    return {
+        "read_file": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Repository-relative file name."
+                }
+            },
+            "required": ["filename"],
+        },
+        "write_file": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Repository-relative file name."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete content to write."
+                },
+            },
+            "required": ["filename", "content"],
+        },
+        "list_files": {
+            "type": "object",
+            "properties": {},
+        },
+        "run_command": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Command to run in the repository."
+                }
+            },
+            "required": ["command"],
+        },
+        "create_branch": {
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": "Git branch name."
+                }
+            },
+            "required": ["branch_name"],
+        },
+        "commit_changes": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Git commit message."
+                }
+            },
+            "required": ["message"],
+        },
+        "push_branch": {
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": "Branch to push."
+                }
+            },
+            "required": ["branch_name"],
+        },
+        "get_issue_details": {
+            "type": "object",
+            "properties": {
+                "repo_name": {
+                    "type": "string"
+                },
+                "issue_number": {
+                    "type": "integer"
+                },
+            },
+            "required": ["repo_name", "issue_number"],
+        },
+        "create_pull_request": {
+            "type": "object",
+            "properties": {
+                "repo_name": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "head": {"type": "string"},
+                "base": {"type": "string"},
+            },
+            "required": [
+                "repo_name",
+                "title",
+                "body",
+                "head",
+                "base",
+            ],
+        },
+        "add_issue_comment": {
+            "type": "object",
+            "properties": {
+                "repo_name": {"type": "string"},
+                "issue_number": {"type": "integer"},
+                "comment": {"type": "string"},
+            },
+            "required": [
+                "repo_name",
+                "issue_number",
+                "comment",
+            ],
+        },
+        "send_slack_notification": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"}
+            },
+            "required": ["message"],
+        },
+    }
 
 
 # ============================================================
