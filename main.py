@@ -36,6 +36,223 @@ load_dotenv()
 
 
 # ============================================================
+# HELPER: BUILD TOOL SCHEMAS
+# ============================================================
+
+def build_tool_schemas():
+    """
+    Explicit Gemini schemas for every registered tool.
+
+    The parameter names here MUST match the actual Python
+    function signatures in the tools modules.
+    """
+
+    return {
+        "read_file": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "Repository-relative file name, "
+                        "for example calculator.py or "
+                        "tests/test_calculator.py."
+                    ),
+                },
+            },
+            "required": ["filename"],
+        },
+
+        "write_file": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "Repository-relative file name to write."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Complete file content to write."
+                    ),
+                },
+            },
+            "required": [
+                "filename",
+                "content",
+            ],
+        },
+
+        "list_files": {
+            "type": "object",
+            "properties": {},
+        },
+
+        "run_command": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "Shell command to run in the repository "
+                        "workspace."
+                    ),
+                },
+            },
+            "required": ["command"],
+        },
+
+        "create_branch": {
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": (
+                        "Name of the feature branch to create."
+                    ),
+                },
+            },
+            "required": ["branch_name"],
+        },
+
+        "commit_changes": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": (
+                        "Git commit message."
+                    ),
+                },
+            },
+            "required": ["message"],
+        },
+
+        "push_branch": {
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": (
+                        "Branch name to push to origin."
+                    ),
+                },
+            },
+            "required": ["branch_name"],
+        },
+
+        "get_issue_details": {
+            "type": "object",
+            "properties": {
+                "repo_name": {
+                    "type": "string",
+                    "description": (
+                        "GitHub repository in owner/name format."
+                    ),
+                },
+                "issue_number": {
+                    "type": "integer",
+                    "description": (
+                        "GitHub issue number."
+                    ),
+                },
+            },
+            "required": [
+                "repo_name",
+                "issue_number",
+            ],
+        },
+
+        "create_pull_request": {
+            "type": "object",
+            "properties": {
+                "repo_name": {
+                    "type": "string",
+                    "description": (
+                        "GitHub repository in owner/name format."
+                    ),
+                },
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Pull request title."
+                    ),
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "Pull request description."
+                    ),
+                },
+                "head": {
+                    "type": "string",
+                    "description": (
+                        "Source branch containing the changes."
+                    ),
+                },
+                "base": {
+                    "type": "string",
+                    "description": (
+                        "Target branch, normally main."
+                    ),
+                },
+            },
+            "required": [
+                "repo_name",
+                "title",
+                "body",
+                "head",
+                "base",
+            ],
+        },
+
+        "add_issue_comment": {
+            "type": "object",
+            "properties": {
+                "repo_name": {
+                    "type": "string",
+                    "description": (
+                        "GitHub repository in owner/name format."
+                    ),
+                },
+                "issue_number": {
+                    "type": "integer",
+                    "description": (
+                        "GitHub issue number."
+                    ),
+                },
+                "comment": {
+                    "type": "string",
+                    "description": (
+                        "Comment to add to the issue."
+                    ),
+                },
+            },
+            "required": [
+                "repo_name",
+                "issue_number",
+                "comment",
+            ],
+        },
+
+        "send_slack_notification": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": (
+                        "Message to send to Slack."
+                    ),
+                },
+            },
+            "required": ["message"],
+        },
+    }
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -131,8 +348,14 @@ def main():
 
     agent = AutoPRAgent(
         llm_client=llm_client,
-        max_retries=10,
+        max_retries=15,
     )
+
+    # ========================================================
+    # TOOL SCHEMAS
+    # ========================================================
+
+    schemas = build_tool_schemas()
 
     # ========================================================
     # REGISTER WORKSPACE TOOLS
@@ -141,78 +364,43 @@ def main():
     agent.register_tool(
         "read_file",
         read_file,
-        {
-            "type": "object",
-            "description": (
-                "Read a file from the repository."
-            ),
-        },
+        schemas["read_file"],
     )
 
     agent.register_tool(
         "write_file",
         write_file,
-        {
-            "type": "object",
-            "description": (
-                "Write content to a repository file."
-            ),
-        },
+        schemas["write_file"],
     )
 
     agent.register_tool(
         "list_files",
         list_files,
-        {
-            "type": "object",
-            "description": (
-                "List files in the repository."
-            ),
-        },
+        schemas["list_files"],
     )
 
     agent.register_tool(
         "run_command",
         run_command,
-        {
-            "type": "object",
-            "description": (
-                "Run a command in the repository."
-            ),
-        },
+        schemas["run_command"],
     )
 
     agent.register_tool(
         "create_branch",
         create_branch,
-        {
-            "type": "object",
-            "description": (
-                "Create a Git branch."
-            ),
-        },
+        schemas["create_branch"],
     )
 
     agent.register_tool(
         "commit_changes",
         commit_changes,
-        {
-            "type": "object",
-            "description": (
-                "Commit repository changes."
-            ),
-        },
+        schemas["commit_changes"],
     )
 
     agent.register_tool(
         "push_branch",
         push_branch,
-        {
-            "type": "object",
-            "description": (
-                "Push a branch to GitHub."
-            ),
-        },
+        schemas["push_branch"],
     )
 
     # ========================================================
@@ -222,34 +410,19 @@ def main():
     agent.register_tool(
         "get_issue_details",
         get_issue_details,
-        {
-            "type": "object",
-            "description": (
-                "Get GitHub issue details."
-            ),
-        },
+        schemas["get_issue_details"],
     )
 
     agent.register_tool(
         "create_pull_request",
         create_pull_request,
-        {
-            "type": "object",
-            "description": (
-                "Create a GitHub pull request."
-            ),
-        },
+        schemas["create_pull_request"],
     )
 
     agent.register_tool(
         "add_issue_comment",
         add_issue_comment,
-        {
-            "type": "object",
-            "description": (
-                "Add a comment to a GitHub issue."
-            ),
-        },
+        schemas["add_issue_comment"],
     )
 
     # ========================================================
@@ -259,12 +432,7 @@ def main():
     agent.register_tool(
         "send_slack_notification",
         send_slack_notification,
-        {
-            "type": "object",
-            "description": (
-                "Send a Slack notification."
-            ),
-        },
+        schemas["send_slack_notification"],
     )
 
     # ========================================================
@@ -459,6 +627,25 @@ Then:
 18. Push the branch.
 19. Create a pull request.
 20. Comment on the issue when appropriate.
+
+IMPORTANT TOOL RULE:
+
+Use the EXACT argument names shown in AVAILABLE TOOLS.
+
+For example:
+
+read_file:
+{{"filename":"calculator.py"}}
+
+NOT:
+
+{{"path":"calculator.py"}}
+
+NOT:
+
+{{"file_path":"calculator.py"}}
+
+Do not invent argument names.
 
 IMPORTANT:
 
