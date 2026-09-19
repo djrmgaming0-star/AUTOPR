@@ -10,6 +10,7 @@ loop using Gemini as the reasoning model.
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any, Callable
 
@@ -50,14 +51,9 @@ class AutoPRAgent:
         self.llm_client = llm_client
         self.max_retries = max_retries
 
-        self.history: list[
-            dict[str, Any]
-        ] = []
+        self.history: list[dict[str, Any]] = []
 
-        self.tools: dict[
-            str,
-            dict[str, Any],
-        ] = {}
+        self.tools: dict[str, dict[str, Any]] = {}
 
     # ---------------------------------------------------------
     # TOOL REGISTRATION
@@ -71,6 +67,9 @@ class AutoPRAgent:
     ) -> None:
         """
         Register a tool that Gemini can select.
+
+        The schema is shown directly to Gemini so Gemini knows
+        the exact parameter names expected by the function.
         """
 
         if not name:
@@ -99,8 +98,11 @@ class AutoPRAgent:
 
     def _build_tool_descriptions(self) -> str:
         """
-        Convert registered tools into a compact
-        description that Gemini can understand.
+        Convert registered tools into a clear description
+        that Gemini can understand.
+
+        IMPORTANT:
+        Gemini must use the exact argument names shown here.
         """
 
         if not self.tools:
@@ -110,7 +112,14 @@ class AutoPRAgent:
             )
 
         lines = [
-            "AVAILABLE TOOLS:"
+            "AVAILABLE TOOLS:",
+            "",
+            "CRITICAL TOOL ARGUMENT RULE:",
+            "Use ONLY the exact parameter names shown in each "
+            "tool schema.",
+            "Do NOT rename parameters.",
+            "Do NOT invent parameters.",
+            "",
         ]
 
         for name, data in self.tools.items():
@@ -129,7 +138,137 @@ class AutoPRAgent:
                 f"- {name}: {schema_json}"
             )
 
+            # Add Python signature as a second source of truth.
+            try:
+                signature = inspect.signature(
+                    data["func"]
+                )
+
+                parameters = []
+
+                for parameter_name, parameter in (
+                    signature.parameters.items()
+                ):
+                    if parameter.kind in (
+                        inspect.Parameter.VAR_POSITIONAL,
+                        inspect.Parameter.VAR_KEYWORD,
+                    ):
+                        continue
+
+                    if parameter.default is inspect.Parameter.empty:
+                        required = "required"
+                    else:
+                        required = "optional"
+
+                    parameters.append(
+                        f"{parameter_name} ({required})"
+                    )
+
+                if parameters:
+                    lines.append(
+                        "  Exact Python parameters: "
+                        + ", ".join(parameters)
+                    )
+
+            except Exception:
+                pass
+
+            lines.append("")
+
         return "\n".join(lines)
+
+    # ---------------------------------------------------------
+    # ARGUMENT VALIDATION
+    # ---------------------------------------------------------
+
+    def _validate_action_input(
+        self,
+        action: str,
+        action_input: dict[str, Any],
+    ) -> None:
+        """
+        Validate that Gemini supplied the correct argument names
+        before attempting to execute a tool.
+
+        This prevents errors such as:
+
+            read_file(file_path="calculator.py")
+
+        when the real function expects:
+
+            read_file(filename="calculator.py")
+        """
+
+        if action not in self.tools:
+            raise ValueError(
+                f"Unknown tool '{action}'."
+            )
+
+        if not isinstance(action_input, dict):
+            raise ValueError(
+                "action_input must be a JSON object."
+            )
+
+        tool = self.tools[action]
+        function = tool["func"]
+
+        try:
+            signature = inspect.signature(function)
+        except Exception:
+            return
+
+        parameters = signature.parameters
+
+        accepted_names = set()
+        required_names = set()
+
+        accepts_kwargs = False
+
+        for name, parameter in parameters.items():
+
+            if parameter.kind == (
+                inspect.Parameter.VAR_KEYWORD
+            ):
+                accepts_kwargs = True
+                continue
+
+            if parameter.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+            ):
+                continue
+
+            accepted_names.add(name)
+
+            if parameter.default is inspect.Parameter.empty:
+                required_names.add(name)
+
+        supplied_names = set(
+            action_input.keys()
+        )
+
+        unknown_names = (
+            supplied_names - accepted_names
+        )
+
+        missing_names = (
+            required_names - supplied_names
+        )
+
+        if unknown_names and not accepts_kwargs:
+            raise ValueError(
+                f"Tool '{action}' received invalid "
+                f"argument(s): "
+                f"{', '.join(sorted(unknown_names))}. "
+                f"Expected parameter(s): "
+                f"{', '.join(sorted(accepted_names))}."
+            )
+
+        if missing_names:
+            raise ValueError(
+                f"Tool '{action}' is missing required "
+                f"argument(s): "
+                f"{', '.join(sorted(missing_names))}."
+            )
 
     # ---------------------------------------------------------
     # HISTORY
@@ -147,13 +286,9 @@ class AutoPRAgent:
         limits during long coding tasks.
         """
 
-        recent = self.history[
-            -max_messages:
-        ]
+        recent = self.history[-max_messages:]
 
-        compact: list[
-            dict[str, str]
-        ] = []
+        compact: list[dict[str, str]] = []
 
         for message in recent:
             role = str(
@@ -172,9 +307,7 @@ class AutoPRAgent:
 
             if len(content) > max_chars_per_message:
                 content = (
-                    content[
-                        :max_chars_per_message
-                    ]
+                    content[:max_chars_per_message]
                     + "\n...[truncated]..."
                 )
 
@@ -196,9 +329,7 @@ class AutoPRAgent:
         Build the main instruction given to Gemini.
         """
 
-        tools = (
-            self._build_tool_descriptions()
-        )
+        tools = self._build_tool_descriptions()
 
         return f"""
 You are AutoPR, an autonomous software engineering agent.
@@ -240,6 +371,24 @@ IMPORTANT SAFETY RULES:
 - Do not claim success without evidence.
 - If a tool fails, inspect the error and recover when possible.
 - If recovery is not possible, return NEEDS_INPUT.
+
+CRITICAL TOOL ARGUMENT RULES:
+
+- You MUST use the exact parameter names shown in
+  AVAILABLE TOOLS.
+- Never rename a parameter.
+- Never use "path" when the tool expects "filename".
+- Never use "file_path" when the tool expects "filename".
+- For read_file, the parameter is EXACTLY "filename".
+- Correct example:
+  {{"filename":"calculator.py"}}
+- Incorrect examples:
+  {{"path":"calculator.py"}}
+  {{"file_path":"calculator.py"}}
+- For every other tool, use ONLY the exact parameter names
+  shown in its schema and Python parameter list.
+- If a previous tool call failed because of an argument name,
+  correct the argument name before trying again.
 
 {tools}
 
@@ -313,9 +462,7 @@ The "thought" field must remain short.
 
         # Handle accidental markdown fences even though
         # the system prompt explicitly forbids them.
-        if response.startswith(
-            "```"
-        ):
+        if response.startswith("```"):
             response = (
                 response
                 .replace("```json", "", 1)
@@ -324,9 +471,7 @@ The "thought" field must remain short.
             )
 
         try:
-            decision = json.loads(
-                response
-            )
+            decision = json.loads(response)
 
         except json.JSONDecodeError as exc:
             raise ValueError(
@@ -334,10 +479,7 @@ The "thought" field must remain short.
                 f"{exc}"
             ) from exc
 
-        if not isinstance(
-            decision,
-            dict,
-        ):
+        if not isinstance(decision, dict):
             raise ValueError(
                 "Gemini response must be a JSON object."
             )
@@ -357,9 +499,7 @@ The "thought" field must remain short.
         if missing:
             raise ValueError(
                 "Gemini JSON is missing required keys: "
-                + ", ".join(
-                    sorted(missing)
-                )
+                + ", ".join(sorted(missing))
             )
 
         status = decision["status"]
@@ -405,25 +545,25 @@ The "thought" field must remain short.
         action_input: dict[str, Any],
     ) -> Any:
         """
-        Execute a registered tool.
+        Execute a registered tool safely.
         """
 
         if action not in self.tools:
             raise ValueError(
                 f"Unknown tool '{action}'. "
                 "Available tools: "
-                + ", ".join(
-                    self.tools.keys()
-                )
+                + ", ".join(self.tools.keys())
             )
 
-        tool = self.tools[action][
-            "func"
-        ]
-
-        return tool(
-            **action_input
+        # Validate argument names BEFORE execution.
+        self._validate_action_input(
+            action,
+            action_input,
         )
+
+        tool = self.tools[action]["func"]
+
+        return tool(**action_input)
 
     # ---------------------------------------------------------
     # MAIN AGENT LOOP
@@ -454,8 +594,7 @@ The "thought" field must remain short.
             self.max_retries + 1,
         ):
             print(
-                f"\n[AGENT] "
-                f"Attempt {attempt}/"
+                f"\n[AGENT] Attempt {attempt}/"
                 f"{self.max_retries}"
             )
 
@@ -511,10 +650,7 @@ The "thought" field must remain short.
                     }
                 )
 
-                if (
-                    attempt
-                    >= self.max_retries
-                ):
+                if attempt >= self.max_retries:
                     return {
                         "thought": error_message,
                         "status": "NEEDS_INPUT",
@@ -535,17 +671,9 @@ The "thought" field must remain short.
                 )
             )
 
-            status = decision[
-                "status"
-            ]
-
-            action = decision[
-                "action"
-            ]
-
-            action_input = decision[
-                "action_input"
-            ]
+            status = decision["status"]
+            action = decision["action"]
+            action_input = decision["action_input"]
 
             print(
                 f"[AGENT] Status: {status}"
@@ -691,30 +819,22 @@ The "thought" field must remain short.
 
                 # Convert tool result safely.
                 try:
-                    result_text = (
-                        json.dumps(
-                            result,
-                            ensure_ascii=False,
-                            default=str,
-                        )
+                    result_text = json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        default=str,
                     )
 
                 except Exception:
-                    result_text = str(
-                        result
-                    )
+                    result_text = str(result)
 
                 # Keep extremely large tool outputs
                 # from exploding the conversation.
                 max_result_chars = 10000
 
-                if len(result_text) > (
-                    max_result_chars
-                ):
+                if len(result_text) > max_result_chars:
                     result_text = (
-                        result_text[
-                            :max_result_chars
-                        ]
+                        result_text[:max_result_chars]
                         + "\n...[result truncated]..."
                     )
 
@@ -722,8 +842,7 @@ The "thought" field must remain short.
                     {
                         "role": "user",
                         "content": (
-                            f"Tool '{action}' "
-                            "result:\n"
+                            f"Tool '{action}' result:\n"
                             f"{result_text}"
                         ),
                     }
