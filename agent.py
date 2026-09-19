@@ -16,16 +16,7 @@ from typing import Any, Callable
 
 
 class AutoPRAgent:
-    """
-    Bounded autonomous coding agent.
-
-    The agent:
-        1. Sends the task and recent history to Gemini.
-        2. Gemini chooses the next tool.
-        3. AutoPR executes that tool.
-        4. The result is returned to Gemini.
-        5. The process repeats until DONE or NEEDS_INPUT.
-    """
+    """Bounded autonomous coding agent."""
 
     VALID_STATUSES = {
         "CONTINUE",
@@ -36,8 +27,9 @@ class AutoPRAgent:
     def __init__(
         self,
         llm_client: Any,
-        max_retries: int = 10,
+        max_retries: int = 25,
     ) -> None:
+
         if llm_client is None:
             raise ValueError(
                 "llm_client cannot be None."
@@ -53,11 +45,14 @@ class AutoPRAgent:
 
         self.history: list[dict[str, Any]] = []
 
-        self.tools: dict[str, dict[str, Any]] = {}
+        self.tools: dict[
+            str,
+            dict[str, Any],
+        ] = {}
 
-    # ---------------------------------------------------------
+    # =========================================================
     # TOOL REGISTRATION
-    # ---------------------------------------------------------
+    # =========================================================
 
     def register_tool(
         self,
@@ -65,12 +60,6 @@ class AutoPRAgent:
         func: Callable[..., Any],
         schema: dict[str, Any],
     ) -> None:
-        """
-        Register a tool that Gemini can select.
-
-        The schema is shown directly to Gemini so Gemini knows
-        the exact parameter names expected by the function.
-        """
 
         if not name:
             raise ValueError(
@@ -92,18 +81,11 @@ class AutoPRAgent:
             "schema": schema,
         }
 
-    # ---------------------------------------------------------
+    # =========================================================
     # TOOL DESCRIPTION
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _build_tool_descriptions(self) -> str:
-        """
-        Convert registered tools into a clear description
-        that Gemini can understand.
-
-        IMPORTANT:
-        Gemini must use the exact argument names shown here.
-        """
 
         if not self.tools:
             return (
@@ -115,14 +97,14 @@ class AutoPRAgent:
             "AVAILABLE TOOLS:",
             "",
             "CRITICAL TOOL ARGUMENT RULE:",
-            "Use ONLY the exact parameter names shown in each "
-            "tool schema.",
-            "Do NOT rename parameters.",
-            "Do NOT invent parameters.",
+            "Use ONLY the exact parameter names shown.",
+            "Never rename parameters.",
+            "Never invent parameters.",
             "",
         ]
 
         for name, data in self.tools.items():
+
             schema = data["schema"]
 
             try:
@@ -138,8 +120,9 @@ class AutoPRAgent:
                 f"- {name}: {schema_json}"
             )
 
-            # Add Python signature as a second source of truth.
+            # Also show the actual Python signature.
             try:
+
                 signature = inspect.signature(
                     data["func"]
                 )
@@ -149,13 +132,17 @@ class AutoPRAgent:
                 for parameter_name, parameter in (
                     signature.parameters.items()
                 ):
+
                     if parameter.kind in (
                         inspect.Parameter.VAR_POSITIONAL,
                         inspect.Parameter.VAR_KEYWORD,
                     ):
                         continue
 
-                    if parameter.default is inspect.Parameter.empty:
+                    if (
+                        parameter.default
+                        is inspect.Parameter.empty
+                    ):
                         required = "required"
                     else:
                         required = "optional"
@@ -177,54 +164,46 @@ class AutoPRAgent:
 
         return "\n".join(lines)
 
-    # ---------------------------------------------------------
+    # =========================================================
     # ARGUMENT VALIDATION
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _validate_action_input(
         self,
         action: str,
         action_input: dict[str, Any],
     ) -> None:
-        """
-        Validate that Gemini supplied the correct argument names
-        before attempting to execute a tool.
-
-        This prevents errors such as:
-
-            read_file(file_path="calculator.py")
-
-        when the real function expects:
-
-            read_file(filename="calculator.py")
-        """
 
         if action not in self.tools:
             raise ValueError(
                 f"Unknown tool '{action}'."
             )
 
-        if not isinstance(action_input, dict):
+        if not isinstance(
+            action_input,
+            dict,
+        ):
             raise ValueError(
                 "action_input must be a JSON object."
             )
 
-        tool = self.tools[action]
-        function = tool["func"]
+        function = self.tools[action]["func"]
 
         try:
-            signature = inspect.signature(function)
+            signature = inspect.signature(
+                function
+            )
         except Exception:
             return
-
-        parameters = signature.parameters
 
         accepted_names = set()
         required_names = set()
 
         accepts_kwargs = False
 
-        for name, parameter in parameters.items():
+        for name, parameter in (
+            signature.parameters.items()
+        ):
 
             if parameter.kind == (
                 inspect.Parameter.VAR_KEYWORD
@@ -232,14 +211,17 @@ class AutoPRAgent:
                 accepts_kwargs = True
                 continue
 
-            if parameter.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
+            if parameter.kind == (
+                inspect.Parameter.VAR_POSITIONAL
             ):
                 continue
 
             accepted_names.add(name)
 
-            if parameter.default is inspect.Parameter.empty:
+            if (
+                parameter.default
+                is inspect.Parameter.empty
+            ):
                 required_names.add(name)
 
         supplied_names = set(
@@ -247,14 +229,19 @@ class AutoPRAgent:
         )
 
         unknown_names = (
-            supplied_names - accepted_names
+            supplied_names
+            - accepted_names
         )
 
         missing_names = (
-            required_names - supplied_names
+            required_names
+            - supplied_names
         )
 
-        if unknown_names and not accepts_kwargs:
+        if (
+            unknown_names
+            and not accepts_kwargs
+        ):
             raise ValueError(
                 f"Tool '{action}' received invalid "
                 f"argument(s): "
@@ -267,30 +254,247 @@ class AutoPRAgent:
             raise ValueError(
                 f"Tool '{action}' is missing required "
                 f"argument(s): "
-                f"{', '.join(sorted(missing_names))}."
+                f"{', ".join(sorted(missing_names))}."
             )
 
-    # ---------------------------------------------------------
+    # =========================================================
+    # NORMALIZE GEMINI ARGUMENTS
+    # =========================================================
+
+    def _normalize_action_input(
+        self,
+        action: str,
+        action_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Repair common argument-name mistakes from Gemini.
+
+        Example:
+
+            {"file_path": "calculator.py"}
+
+        becomes:
+
+            {"filename": "calculator.py"}
+        """
+
+        normalized = dict(
+            action_input
+        )
+
+        # -----------------------------------------------------
+        # read_file
+        # -----------------------------------------------------
+
+        if action == "read_file":
+
+            if "filename" not in normalized:
+
+                aliases = [
+                    "file_path",
+                    "path",
+                    "file",
+                    "target",
+                    "name",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "filename"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"read_file argument "
+                            f"'{alias}' -> 'filename'"
+                        )
+
+                        break
+
+        # -----------------------------------------------------
+        # write_file
+        # -----------------------------------------------------
+
+        if action == "write_file":
+
+            if "filename" not in normalized:
+
+                aliases = [
+                    "file_path",
+                    "path",
+                    "file",
+                    "target",
+                    "name",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "filename"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"write_file argument "
+                            f"'{alias}' -> 'filename'"
+                        )
+
+                        break
+
+        # -----------------------------------------------------
+        # run_command
+        # -----------------------------------------------------
+
+        if action == "run_command":
+
+            if "command" not in normalized:
+
+                aliases = [
+                    "cmd",
+                    "shell_command",
+                    "command_line",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "command"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"run_command argument "
+                            f"'{alias}' -> 'command'"
+                        )
+
+                        break
+
+        # -----------------------------------------------------
+        # create_branch
+        # -----------------------------------------------------
+
+        if action == "create_branch":
+
+            if "branch_name" not in normalized:
+
+                aliases = [
+                    "branch",
+                    "name",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "branch_name"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"create_branch argument "
+                            f"'{alias}' -> 'branch_name'"
+                        )
+
+                        break
+
+        # -----------------------------------------------------
+        # push_branch
+        # -----------------------------------------------------
+
+        if action == "push_branch":
+
+            if "branch_name" not in normalized:
+
+                aliases = [
+                    "branch",
+                    "name",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "branch_name"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"push_branch argument "
+                            f"'{alias}' -> 'branch_name'"
+                        )
+
+                        break
+
+        # -----------------------------------------------------
+        # commit_changes
+        # -----------------------------------------------------
+
+        if action == "commit_changes":
+
+            if "message" not in normalized:
+
+                aliases = [
+                    "commit_message",
+                    "msg",
+                ]
+
+                for alias in aliases:
+
+                    if alias in normalized:
+
+                        normalized[
+                            "message"
+                        ] = normalized.pop(
+                            alias
+                        )
+
+                        print(
+                            f"[AGENT] Normalized "
+                            f"commit_changes argument "
+                            f"'{alias}' -> 'message'"
+                        )
+
+                        break
+
+        return normalized
+
+    # =========================================================
     # HISTORY
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _build_recent_history(
         self,
-        max_messages: int = 8,
-        max_chars_per_message: int = 5000,
+        max_messages: int = 10,
+        max_chars_per_message: int = 6000,
     ) -> list[dict[str, str]]:
-        """
-        Return a bounded portion of the conversation.
 
-        This prevents the prompt from growing without
-        limits during long coding tasks.
-        """
+        recent = self.history[
+            -max_messages:
+        ]
 
-        recent = self.history[-max_messages:]
-
-        compact: list[dict[str, str]] = []
+        compact = []
 
         for message in recent:
+
             role = str(
                 message.get(
                     "role",
@@ -305,9 +509,14 @@ class AutoPRAgent:
                 )
             )
 
-            if len(content) > max_chars_per_message:
+            if len(content) > (
+                max_chars_per_message
+            ):
+
                 content = (
-                    content[:max_chars_per_message]
+                    content[
+                        :max_chars_per_message
+                    ]
                     + "\n...[truncated]..."
                 )
 
@@ -320,16 +529,15 @@ class AutoPRAgent:
 
         return compact
 
-    # ---------------------------------------------------------
+    # =========================================================
     # SYSTEM PROMPT
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _build_system_prompt(self) -> str:
-        """
-        Build the main instruction given to Gemini.
-        """
 
-        tools = self._build_tool_descriptions()
+        tools = (
+            self._build_tool_descriptions()
+        )
 
         return f"""
 You are AutoPR, an autonomous software engineering agent.
@@ -337,79 +545,98 @@ You are AutoPR, an autonomous software engineering agent.
 Your job is to complete a coding work item safely and
 traceably.
 
-You operate using a bounded Reason -> Act -> Observe loop.
+You operate using a bounded:
 
-You must:
+Reason -> Act -> Observe -> Repeat
+
+loop.
+
+You MUST:
 
 1. Understand the work item.
-2. Inspect the repository before changing code.
-3. Read repository instructions and coding rules.
-4. Read relevant documentation and requirements.
+2. Inspect the repository.
+3. Read repository rules.
+4. Read relevant documentation.
 5. Inspect existing source code.
-6. Inspect relevant tests.
-7. Make the smallest appropriate implementation.
-8. Run the repository-approved validation commands.
-9. Analyze failures.
+6. Inspect existing tests.
+7. Implement the smallest correct change.
+8. Run real validation commands.
+9. Inspect failures.
 10. Fix failures when possible.
 11. Re-run validation.
-12. Only report completion after validation succeeds.
-13. Never claim that a test passed unless a validation tool
-    actually reported success.
-14. Never invent files, test results, PR URLs, or repository
-    information.
-15. If genuinely required information is missing, request
-    human input.
+12. Only report DONE after real validation succeeds.
+13. Never invent test results.
+14. Never invent repository information.
+15. Never claim a PR exists unless the PR tool actually
+    succeeds.
+16. Ask for human input only when genuinely required.
 
-IMPORTANT SAFETY RULES:
+IMPORTANT TOOL RULES:
 
 - Only use registered tools.
-- Never invent a tool.
-- Never invent tool arguments.
-- Do not modify unrelated files.
-- Respect repository coding rules.
-- Prefer inspecting before modifying.
-- Do not claim success without evidence.
-- If a tool fails, inspect the error and recover when possible.
-- If recovery is not possible, return NEEDS_INPUT.
+- Never invent tools.
+- Never invent parameters.
+- Use the EXACT parameter names shown in AVAILABLE TOOLS.
+- If a previous call failed because of a parameter name,
+  correct it immediately.
+- Do not repeatedly retry the same invalid argument.
 
-CRITICAL TOOL ARGUMENT RULES:
+SPECIAL READ_FILE RULE:
 
-- You MUST use the exact parameter names shown in
-  AVAILABLE TOOLS.
-- Never rename a parameter.
-- Never use "path" when the tool expects "filename".
-- Never use "file_path" when the tool expects "filename".
-- For read_file, the parameter is EXACTLY "filename".
-- Correct example:
-  {{"filename":"calculator.py"}}
-- Incorrect examples:
-  {{"path":"calculator.py"}}
-  {{"file_path":"calculator.py"}}
-- For every other tool, use ONLY the exact parameter names
-  shown in its schema and Python parameter list.
-- If a previous tool call failed because of an argument name,
-  correct the argument name before trying again.
+The read_file tool uses:
+
+{{"filename":"calculator.py"}}
+
+It does NOT use:
+
+{{"path":"calculator.py"}}
+
+It does NOT use:
+
+{{"file_path":"calculator.py"}}
+
+AVAILABLE TOOLS:
 
 {tools}
+
+WORKFLOW:
+
+First inspect.
+
+Then understand.
+
+Then implement.
+
+Then test.
+
+Then debug if necessary.
+
+Then create a feature branch.
+
+Then commit.
+
+Then push.
+
+Then create the pull request.
+
+Then optionally comment on the issue.
+
+Finally return DONE only when the work is actually complete.
 
 RESPONSE FORMAT:
 
 Return ONLY valid JSON.
 
-Do not use Markdown.
-Do not use code fences.
-Do not include explanations outside JSON.
-
-For an action:
+For CONTINUE:
 
 {{
-  "thought": "short description of the next action",
+  "thought": "short description",
   "status": "CONTINUE",
   "action": "registered_tool_name",
   "action_input": {{}}
 }}
 
-When the work item is completely finished:
+For DONE:
 
 {{
   "thought": "short completion summary",
@@ -418,10 +645,10 @@ When the work item is completely finished:
   "action_input": {{}}
 }}
 
-When human input is genuinely required:
+For NEEDS_INPUT:
 
 {{
-  "thought": "short explanation of what information is missing",
+  "thought": "short explanation",
   "status": "NEEDS_INPUT",
   "action": "",
   "action_input": {{}}
@@ -429,29 +656,19 @@ When human input is genuinely required:
 
 VALID STATUS VALUES:
 
-- CONTINUE
-- DONE
-- NEEDS_INPUT
-
-The "action" field must contain a registered tool name
-when status is CONTINUE.
-
-The "action_input" field must always be a JSON object.
-
-The "thought" field must remain short.
+CONTINUE
+DONE
+NEEDS_INPUT
 """.strip()
 
-    # ---------------------------------------------------------
+    # =========================================================
     # RESPONSE PARSING
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _parse_llm_response(
         self,
         response: str,
     ) -> dict[str, Any]:
-        """
-        Parse and validate Gemini's JSON response.
-        """
 
         if not response:
             raise ValueError(
@@ -460,26 +677,41 @@ The "thought" field must remain short.
 
         response = response.strip()
 
-        # Handle accidental markdown fences even though
-        # the system prompt explicitly forbids them.
         if response.startswith("```"):
+
             response = (
                 response
-                .replace("```json", "", 1)
-                .replace("```", "", 1)
+                .replace(
+                    "```json",
+                    "",
+                    1,
+                )
+                .replace(
+                    "```",
+                    "",
+                    1,
+                )
                 .strip()
             )
 
         try:
-            decision = json.loads(response)
+
+            decision = json.loads(
+                response
+            )
 
         except json.JSONDecodeError as exc:
+
             raise ValueError(
                 "Gemini response was not valid JSON: "
                 f"{exc}"
             ) from exc
 
-        if not isinstance(decision, dict):
+        if not isinstance(
+            decision,
+            dict,
+        ):
+
             raise ValueError(
                 "Gemini response must be a JSON object."
             )
@@ -497,14 +729,22 @@ The "thought" field must remain short.
         )
 
         if missing:
+
             raise ValueError(
                 "Gemini JSON is missing required keys: "
-                + ", ".join(sorted(missing))
+                + ", ".join(
+                    sorted(missing)
+                )
             )
 
-        status = decision["status"]
+        status = decision[
+            "status"
+        ]
 
-        if status not in self.VALID_STATUSES:
+        if status not in (
+            self.VALID_STATUSES
+        ):
+
             raise ValueError(
                 f"Invalid status: {status}"
             )
@@ -513,6 +753,7 @@ The "thought" field must remain short.
             decision["thought"],
             str,
         ):
+
             raise ValueError(
                 "thought must be a string."
             )
@@ -521,6 +762,7 @@ The "thought" field must remain short.
             decision["action"],
             str,
         ):
+
             raise ValueError(
                 "action must be a string."
             )
@@ -529,55 +771,66 @@ The "thought" field must remain short.
             decision["action_input"],
             dict,
         ):
+
             raise ValueError(
                 "action_input must be an object."
             )
 
         return decision
 
-    # ---------------------------------------------------------
+    # =========================================================
     # TOOL EXECUTION
-    # ---------------------------------------------------------
+    # =========================================================
 
     def _execute_tool(
         self,
         action: str,
         action_input: dict[str, Any],
     ) -> Any:
-        """
-        Execute a registered tool safely.
-        """
 
         if action not in self.tools:
+
             raise ValueError(
                 f"Unknown tool '{action}'. "
                 "Available tools: "
-                + ", ".join(self.tools.keys())
+                + ", ".join(
+                    self.tools.keys()
+                )
             )
 
-        # Validate argument names BEFORE execution.
-        self._validate_action_input(
-            action,
-            action_input,
+        # Normalize Gemini's argument names first.
+        normalized_input = (
+            self._normalize_action_input(
+                action,
+                action_input,
+            )
         )
 
-        tool = self.tools[action]["func"]
+        # Validate after normalization.
+        self._validate_action_input(
+            action,
+            normalized_input,
+        )
 
-        return tool(**action_input)
+        tool = self.tools[action][
+            "func"
+        ]
 
-    # ---------------------------------------------------------
-    # MAIN AGENT LOOP
-    # ---------------------------------------------------------
+        return tool(
+            **normalized_input
+        )
+
+    # =========================================================
+    # MAIN LOOP
+    # =========================================================
 
     def run(
         self,
         initial_prompt: str,
     ) -> dict[str, Any]:
-        """
-        Execute the autonomous agent loop.
-        """
 
         if not initial_prompt.strip():
+
             raise ValueError(
                 "initial_prompt cannot be empty."
             )
@@ -593,8 +846,10 @@ The "thought" field must remain short.
             1,
             self.max_retries + 1,
         ):
+
             print(
-                f"\n[AGENT] Attempt {attempt}/"
+                f"\n[AGENT] Attempt "
+                f"{attempt}/"
                 f"{self.max_retries}"
             )
 
@@ -603,6 +858,7 @@ The "thought" field must remain short.
             # -------------------------------------------------
 
             try:
+
                 system_prompt = (
                     self._build_system_prompt()
                 )
@@ -633,6 +889,7 @@ The "thought" field must remain short.
                 )
 
             except Exception as exc:
+
                 error_message = (
                     "LLM error: "
                     f"{type(exc).__name__}: "
@@ -640,7 +897,8 @@ The "thought" field must remain short.
                 )
 
                 print(
-                    f"[ERROR] {error_message}"
+                    f"[ERROR] "
+                    f"{error_message}"
                 )
 
                 self.history.append(
@@ -650,7 +908,10 @@ The "thought" field must remain short.
                     }
                 )
 
-                if attempt >= self.max_retries:
+                if attempt >= (
+                    self.max_retries
+                ):
+
                     return {
                         "thought": error_message,
                         "status": "NEEDS_INPUT",
@@ -661,7 +922,7 @@ The "thought" field must remain short.
                 continue
 
             # -------------------------------------------------
-            # READ GEMINI DECISION
+            # DECISION
             # -------------------------------------------------
 
             thought = str(
@@ -671,22 +932,35 @@ The "thought" field must remain short.
                 )
             )
 
-            status = decision["status"]
-            action = decision["action"]
-            action_input = decision["action_input"]
+            status = decision[
+                "status"
+            ]
+
+            action = decision[
+                "action"
+            ]
+
+            action_input = decision[
+                "action_input"
+            ]
 
             print(
-                f"[AGENT] Status: {status}"
+                f"[AGENT] Status: "
+                f"{status}"
             )
 
             if thought:
+
                 print(
-                    f"[AGENT] Thought: {thought}"
+                    f"[AGENT] Thought: "
+                    f"{thought}"
                 )
 
             if action:
+
                 print(
-                    f"[AGENT] Action: {action}"
+                    f"[AGENT] Action: "
+                    f"{action}"
                 )
 
             # -------------------------------------------------
@@ -694,6 +968,7 @@ The "thought" field must remain short.
             # -------------------------------------------------
 
             if status == "DONE":
+
                 print(
                     "[AGENT] Task completed."
                 )
@@ -710,6 +985,7 @@ The "thought" field must remain short.
             # -------------------------------------------------
 
             if status == "NEEDS_INPUT":
+
                 print(
                     "[AGENT] Human input required."
                 )
@@ -722,17 +998,19 @@ The "thought" field must remain short.
                 }
 
             # -------------------------------------------------
-            # CONTINUE VALIDATION
+            # VALIDATE ACTION
             # -------------------------------------------------
 
             if not action:
+
                 error_message = (
                     "No action was provided. "
                     "Choose one of the available tools."
                 )
 
                 print(
-                    f"[ERROR] {error_message}"
+                    f"[ERROR] "
+                    f"{error_message}"
                 )
 
                 self.history.append(
@@ -754,13 +1032,15 @@ The "thought" field must remain short.
                 continue
 
             if action not in self.tools:
+
                 error_message = (
                     f"Unknown tool '{action}'. "
                     "Choose one of the available tools."
                 )
 
                 print(
-                    f"[ERROR] {error_message}"
+                    f"[ERROR] "
+                    f"{error_message}"
                 )
 
                 self.history.append(
@@ -782,7 +1062,7 @@ The "thought" field must remain short.
                 continue
 
             # -------------------------------------------------
-            # RECORD GEMINI DECISION
+            # RECORD DECISION
             # -------------------------------------------------
 
             self.history.append(
@@ -800,9 +1080,11 @@ The "thought" field must remain short.
             # -------------------------------------------------
 
             try:
+
                 print(
                     f"[AGENT] "
-                    f"Executing tool: {action}"
+                    f"Executing tool: "
+                    f"{action}"
                 )
 
                 result = (
@@ -813,12 +1095,12 @@ The "thought" field must remain short.
                 )
 
                 print(
-                    f"[AGENT] "
-                    f"Tool '{action}' completed."
+                    f"[AGENT] Tool "
+                    f"'{action}' completed."
                 )
 
-                # Convert tool result safely.
                 try:
+
                     result_text = json.dumps(
                         result,
                         ensure_ascii=False,
@@ -826,15 +1108,21 @@ The "thought" field must remain short.
                     )
 
                 except Exception:
-                    result_text = str(result)
 
-                # Keep extremely large tool outputs
-                # from exploding the conversation.
+                    result_text = str(
+                        result
+                    )
+
                 max_result_chars = 10000
 
-                if len(result_text) > max_result_chars:
+                if len(result_text) > (
+                    max_result_chars
+                ):
+
                     result_text = (
-                        result_text[:max_result_chars]
+                        result_text[
+                            :max_result_chars
+                        ]
                         + "\n...[result truncated]..."
                     )
 
@@ -842,13 +1130,15 @@ The "thought" field must remain short.
                     {
                         "role": "user",
                         "content": (
-                            f"Tool '{action}' result:\n"
+                            f"Tool '{action}' "
+                            "result:\n"
                             f"{result_text}"
                         ),
                     }
                 )
 
             except Exception as exc:
+
                 error_message = (
                     f"Tool '{action}' failed: "
                     f"{type(exc).__name__}: "
@@ -856,7 +1146,8 @@ The "thought" field must remain short.
                 )
 
                 print(
-                    f"[ERROR] {error_message}"
+                    f"[ERROR] "
+                    f"{error_message}"
                 )
 
                 self.history.append(
@@ -866,14 +1157,11 @@ The "thought" field must remain short.
                     }
                 )
 
-                # Do not immediately stop.
-                # Gemini gets the error and can
-                # attempt another strategy.
                 continue
 
-        # -----------------------------------------------------
+        # =====================================================
         # RETRY LIMIT
-        # -----------------------------------------------------
+        # =====================================================
 
         print(
             "[AGENT] Maximum retry limit reached."
