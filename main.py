@@ -5,9 +5,9 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from agent import AutoPRAgent
+from gemini_client import GeminiClient
 
 from tools.github_tools import (
     add_issue_comment,
@@ -36,70 +36,94 @@ load_dotenv()
 
 
 # ============================================================
-# OPENAI
-# ============================================================
-
-class OpenAIClient:
-    """OpenAI client used by AutoPR."""
-
-    def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
-
-        self.client = OpenAI(api_key=api_key)
-
-        self.model = os.getenv(
-            "OPENAI_MODEL",
-            "gpt-5.6-luna",
-        )
-
-    def generate(self, system_prompt, messages):
-        response = self.client.responses.create(
-            model=self.model,
-            instructions=system_prompt,
-            input=messages,
-        )
-
-        return response.output_text
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
 def main():
     print("=" * 60)
     print("        AUTOPR MASTER AGENT")
+    print("        Gemini 3.5 Flash-Lite")
     print("=" * 60)
+
+    # ========================================================
+    # ENVIRONMENT VARIABLES
+    # ========================================================
 
     workspace = os.getenv("AUTOPR_WORKSPACE")
     github_repo = os.getenv("GITHUB_REPO")
     work_item_id = os.getenv("WORK_ITEM_ID")
-    base_branch = os.getenv("BASE_BRANCH", "main")
+    base_branch = os.getenv(
+        "BASE_BRANCH",
+        "main",
+    )
 
     if not workspace:
-        raise RuntimeError("AUTOPR_WORKSPACE is not set.")
+        raise RuntimeError(
+            "AUTOPR_WORKSPACE is not set."
+        )
 
     if not github_repo:
-        raise RuntimeError("GITHUB_REPO is not set.")
+        raise RuntimeError(
+            "GITHUB_REPO is not set."
+        )
 
     if not work_item_id:
-        raise RuntimeError("WORK_ITEM_ID is not set.")
+        raise RuntimeError(
+            "WORK_ITEM_ID is not set."
+        )
 
-    issue_number = int(work_item_id)
+    try:
+        issue_number = int(work_item_id)
+    except ValueError as exc:
+        raise RuntimeError(
+            "WORK_ITEM_ID must be a GitHub issue number."
+        ) from exc
 
-    print(f"[SYSTEM] Workspace: {workspace}")
-    print(f"[SYSTEM] GitHub Repository: {github_repo}")
-    print(f"[SYSTEM] Base Branch: {base_branch}")
-    print(f"[SYSTEM] Work Item: #{issue_number}")
+    print(
+        f"[SYSTEM] Workspace: {workspace}"
+    )
+
+    print(
+        f"[SYSTEM] GitHub Repository: "
+        f"{github_repo}"
+    )
+
+    print(
+        f"[SYSTEM] Base Branch: "
+        f"{base_branch}"
+    )
+
+    print(
+        f"[SYSTEM] Work Item: "
+        f"#{issue_number}"
+    )
 
     # ========================================================
-    # OPENAI CLIENT
+    # GEMINI CLIENT
     # ========================================================
 
-    llm_client = OpenAIClient()
+    print()
+    print(
+        "[SYSTEM] Initializing Gemini..."
+    )
+
+    gemini_model = os.getenv(
+        "GEMINI_MODEL",
+        "gemini-3.5-flash-lite",
+    )
+
+    print(
+        f"[SYSTEM] Gemini model: "
+        f"{gemini_model}"
+    )
+
+    llm_client = GeminiClient(
+        model=gemini_model,
+    )
+
+    print(
+        "[SYSTEM] Gemini client initialized."
+    )
 
     # ========================================================
     # CREATE AGENT
@@ -111,7 +135,7 @@ def main():
     )
 
     # ========================================================
-    # REGISTER TOOLS
+    # REGISTER WORKSPACE TOOLS
     # ========================================================
 
     agent.register_tool(
@@ -119,7 +143,9 @@ def main():
         read_file,
         {
             "type": "object",
-            "description": "Read a file from the repository.",
+            "description": (
+                "Read a file from the repository."
+            ),
         },
     )
 
@@ -128,7 +154,9 @@ def main():
         write_file,
         {
             "type": "object",
-            "description": "Write content to a repository file.",
+            "description": (
+                "Write content to a repository file."
+            ),
         },
     )
 
@@ -137,7 +165,9 @@ def main():
         list_files,
         {
             "type": "object",
-            "description": "List files in the repository.",
+            "description": (
+                "List files in the repository."
+            ),
         },
     )
 
@@ -146,7 +176,9 @@ def main():
         run_command,
         {
             "type": "object",
-            "description": "Run a command in the repository.",
+            "description": (
+                "Run a command in the repository."
+            ),
         },
     )
 
@@ -155,7 +187,9 @@ def main():
         create_branch,
         {
             "type": "object",
-            "description": "Create a Git branch.",
+            "description": (
+                "Create a Git branch."
+            ),
         },
     )
 
@@ -164,7 +198,9 @@ def main():
         commit_changes,
         {
             "type": "object",
-            "description": "Commit repository changes.",
+            "description": (
+                "Commit repository changes."
+            ),
         },
     )
 
@@ -173,16 +209,24 @@ def main():
         push_branch,
         {
             "type": "object",
-            "description": "Push a branch to GitHub.",
+            "description": (
+                "Push a branch to GitHub."
+            ),
         },
     )
+
+    # ========================================================
+    # REGISTER GITHUB TOOLS
+    # ========================================================
 
     agent.register_tool(
         "get_issue_details",
         get_issue_details,
         {
             "type": "object",
-            "description": "Get GitHub issue details.",
+            "description": (
+                "Get GitHub issue details."
+            ),
         },
     )
 
@@ -191,7 +235,9 @@ def main():
         create_pull_request,
         {
             "type": "object",
-            "description": "Create a GitHub pull request.",
+            "description": (
+                "Create a GitHub pull request."
+            ),
         },
     )
 
@@ -200,54 +246,83 @@ def main():
         add_issue_comment,
         {
             "type": "object",
-            "description": "Add a comment to a GitHub issue.",
+            "description": (
+                "Add a comment to a GitHub issue."
+            ),
         },
     )
+
+    # ========================================================
+    # REGISTER SLACK TOOL
+    # ========================================================
 
     agent.register_tool(
         "send_slack_notification",
         send_slack_notification,
         {
             "type": "object",
-            "description": "Send a Slack notification.",
+            "description": (
+                "Send a Slack notification."
+            ),
         },
     )
 
-    print("[SYSTEM] Registered tools:")
+    # ========================================================
+    # SHOW REGISTERED TOOLS
+    # ========================================================
+
+    print()
+    print(
+        "[SYSTEM] Registered tools:"
+    )
 
     for name in agent.tools:
-        print(f"  ✓ {name}")
-
-    print()
-    print("--- STARTING MASTER AGENT ---")
-    print()
+        print(
+            f"  ✓ {name}"
+        )
 
     # ========================================================
-    # GET ISSUE
+    # GET GITHUB ISSUE
     # ========================================================
+
+    print()
+    print(
+        "--- RETRIEVING GITHUB ISSUE ---"
+    )
 
     try:
         issue = get_issue_details(
             github_repo,
             issue_number,
         )
+
     except Exception as exc:
         print(
-            f"[ERROR] Could not retrieve issue: {exc}"
+            "[ERROR] Could not retrieve "
+            f"issue: {exc}"
         )
         raise
 
     # ========================================================
-    # EXTRACT ISSUE
+    # EXTRACT ISSUE INFORMATION
     # ========================================================
 
-    if isinstance(issue, dict):
+    if isinstance(
+        issue,
+        dict,
+    ):
         issue_title = str(
-            issue.get("title", "")
+            issue.get(
+                "title",
+                "",
+            )
         )
 
         issue_body = str(
-            issue.get("body", "")
+            issue.get(
+                "body",
+                "",
+            )
         )
 
     else:
@@ -255,34 +330,92 @@ def main():
         issue_body = str(issue)
 
     print(
-        f"[ISSUE] Title: {issue_title}"
+        f"[ISSUE] Title: "
+        f"{issue_title}"
     )
 
     print(
-        f"[ISSUE] Body: {issue_body}"
+        f"[ISSUE] Body: "
+        f"{issue_body}"
     )
 
     # ========================================================
-    # REPOSITORY RULES
+    # READ REPOSITORY RULES
     # ========================================================
 
     repo_rules = ""
 
-    rules_path = Path(workspace) / "repo_rules.md"
+    rules_path = (
+        Path(workspace)
+        / "repo_rules.md"
+    )
 
     if rules_path.exists():
-        repo_rules = rules_path.read_text(
-            encoding="utf-8"
+        try:
+            repo_rules = (
+                rules_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            print(
+                "[SYSTEM] Repository rules loaded."
+            )
+
+        except Exception as exc:
+            print(
+                "[WARN] Could not read "
+                f"repo_rules.md: {exc}"
+            )
+
+    else:
+        print(
+            "[SYSTEM] No repo_rules.md found."
         )
 
     # ========================================================
-    # TASK PROMPT
+    # READ BRD IF PRESENT
+    # ========================================================
+
+    brd = ""
+
+    brd_path = (
+        Path(workspace)
+        / "BRD.md"
+    )
+
+    if brd_path.exists():
+        try:
+            brd = (
+                brd_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            print(
+                "[SYSTEM] BRD.md loaded."
+            )
+
+        except Exception as exc:
+            print(
+                "[WARN] Could not read "
+                f"BRD.md: {exc}"
+            )
+
+    # ========================================================
+    # BUILD TASK PROMPT
     # ========================================================
 
     task_prompt = f"""
-You are AutoPR, an autonomous coding agent.
+You are AutoPR, an autonomous software engineering agent.
 
 Complete GitHub Issue #{issue_number}.
+
+TARGET REPOSITORY:
+{github_repo}
+
+BASE BRANCH:
+{base_branch}
 
 ISSUE TITLE:
 {issue_title}
@@ -293,45 +426,100 @@ ISSUE DESCRIPTION:
 REPOSITORY RULES:
 {repo_rules}
 
-Your job is to:
-1. Inspect the repository.
-2. Understand the issue.
-3. Modify the required files.
-4. Add or update tests when required.
-5. Run the relevant tests.
-6. Fix failures.
-7. Create a branch.
-8. Commit the changes.
-9. Push the branch.
-10. Create a pull request.
-11. Comment on the issue when appropriate.
+BUSINESS REQUIREMENTS / BRD:
+{brd}
 
-Keep unrelated existing code unchanged.
+AUTOPR WORKSPACE:
+{workspace}
 
-When finished, return DONE.
+Your workflow must be evidence-driven.
+
+First inspect the repository before making changes.
+
+Then:
+
+1. Inspect the repository structure.
+2. Read README and relevant documentation.
+3. Read repo_rules.md if present.
+4. Read BRD.md if present.
+5. Understand the GitHub issue.
+6. Find the relevant source files.
+7. Inspect existing tests.
+8. Create an implementation plan internally.
+9. Modify only the required files.
+10. Add or update tests when appropriate.
+11. Run the repository's relevant validation commands.
+12. If validation fails, inspect the failure.
+13. Fix the implementation.
+14. Run validation again.
+15. Continue until validation succeeds or genuine human
+    input is required.
+16. Create a feature branch.
+17. Commit the changes.
+18. Push the branch.
+19. Create a pull request.
+20. Comment on the issue when appropriate.
+
+IMPORTANT:
+
+- Do not invent repository information.
+- Do not invent test results.
+- Do not claim validation passed unless a tool actually
+  reports success.
+- Do not modify unrelated files.
+- Follow repository rules.
+- Prefer existing project conventions.
+- Inspect before editing.
+- Use the available tools to perform actual work.
+- If a tool fails, analyze the error and recover when possible.
+- If genuinely required information is missing, return
+  NEEDS_INPUT.
+- When the implementation, validation, commit, push, and PR
+  workflow is complete, return DONE.
+
+The goal is a real repository change and a traceable GitHub PR,
+not a simulated result.
 """.strip()
 
     # ========================================================
-    # RUN AGENT
+    # START AGENT
     # ========================================================
+
+    print()
+    print(
+        "--- STARTING GEMINI AUTOPR AGENT ---"
+    )
+    print()
 
     result = agent.run(
         initial_prompt=task_prompt
     )
 
+    # ========================================================
+    # AGENT RESULT
+    # ========================================================
+
     print()
-    print("--- AGENT RESULT ---")
+    print(
+        "--- AGENT RESULT ---"
+    )
 
     print(
         json.dumps(
             result,
             indent=2,
+            ensure_ascii=False,
         )
     )
 
     # ========================================================
-    # SLACK
+    # SLACK NOTIFICATION
     # ========================================================
+
+    print()
+    print(
+        "--- SLACK NOTIFICATION ---"
+    )
 
     try:
         send_slack_notification(
@@ -340,16 +528,29 @@ When finished, return DONE.
                     "repository": github_repo,
                     "issue": issue_number,
                     "result": result,
-                }
+                },
+                ensure_ascii=False,
             )
         )
-    except Exception as exc:
+
         print(
-            f"[WARN] Slack notification failed: {exc}"
+            "[SLACK] Notification sent."
         )
 
+    except Exception as exc:
+        print(
+            "[WARN] Slack notification failed: "
+            f"{exc}"
+        )
+
+    # ========================================================
+    # FINISHED
+    # ========================================================
+
     print()
-    print("--- AUTOPR FINISHED ---")
+    print(
+        "--- AUTOPR FINISHED ---"
+    )
 
 
 # ============================================================
