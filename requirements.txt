@@ -1,5 +1,7 @@
 google-genai
-python-dotenv
 PyGithub
+python-dotenv
 requests
-pytest
+numpy
+faiss-cpu
+mcp[cli]==2.2.0
