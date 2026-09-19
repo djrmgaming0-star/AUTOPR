@@ -96,6 +96,15 @@ class AutoPRAgent:
 
         self.llm_failures = 0
 
+        # Locked run context. These values are extracted from the
+        # runtime prompt and enforced at the tool boundary so
+        # Gemini cannot accidentally switch to an example issue.
+        self.target_issue_number: int | None = None
+        self.target_repo_name: str | None = None
+
+        # Number of validations since the most recent write.
+        self.validation_since_last_write = 0
+
     # =========================================================
     # TOOL REGISTRATION
     # =========================================================
@@ -228,6 +237,56 @@ class AutoPRAgent:
             )
 
         return compact
+
+    # =========================================================
+    # RUN CONTEXT
+    # =========================================================
+
+    def _extract_run_context(
+        self,
+        initial_prompt: str,
+    ) -> None:
+        """Extract and lock the configured work item/repository."""
+        import re
+
+        self.target_issue_number = None
+        self.target_repo_name = None
+
+        issue_patterns = (
+            r"Work Item\s*[:#]?\s*#?(\d+)",
+            r"GitHub Issue\s*[:#]?\s*#?(\d+)",
+            r"issue_number\s*[=:]\s*(\d+)",
+        )
+
+        for pattern in issue_patterns:
+            match = re.search(
+                pattern,
+                initial_prompt,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                self.target_issue_number = int(match.group(1))
+                break
+
+        repo_match = re.search(
+            r"GitHub Repository\s*:\s*([^\n\r]+)",
+            initial_prompt,
+            flags=re.IGNORECASE,
+        )
+        if repo_match:
+            self.target_repo_name = repo_match.group(1).strip()
+
+        if self.target_issue_number is not None:
+            print(
+                f"[CONTEXT] Locked work item: "
+                f"#{self.target_issue_number}"
+            )
+
+        if self.target_repo_name:
+            print(
+                f"[CONTEXT] Locked repository: "
+                f"{self.target_repo_name}"
+            )
 
     # =========================================================
     # NORMALIZE ACTION INPUT
@@ -365,6 +424,28 @@ class AutoPRAgent:
                 normalized[new_key] = (
                     normalized.pop(old_key)
                 )
+
+        # Hard-lock the work item and repository configured for
+        # this run. This overrides accidental/example issue numbers
+        # produced by the model.
+        if (
+            action in {
+                "get_issue_details",
+                "add_issue_comment",
+            }
+            and self.target_issue_number is not None
+        ):
+            normalized["issue_number"] = self.target_issue_number
+
+        if (
+            action in {
+                "get_issue_details",
+                "add_issue_comment",
+                "create_pull_request",
+            }
+            and self.target_repo_name
+        ):
+            normalized["repo_name"] = self.target_repo_name
 
         return normalized
 
@@ -651,6 +732,13 @@ raw git commands or raw GitHub API requests.
         return f"""
 You are AutoPR, an autonomous software engineering agent.
 
+IMPORTANT RUN CONTEXT:
+- The work item and repository are locked by the runtime.
+- Never switch to an example issue or another repository.
+- If a tool call contains a different issue number, the runtime
+  will replace it with the locked work item number.
+- Treat the locked work item as the only task for this run.
+
 Your job is to complete a coding work item safely,
 correctly and traceably.
 
@@ -736,26 +824,26 @@ run_command:
 create_branch:
 
 {{
-  "branch_name": "autopr/issue-1-percentage"
+  "branch_name": "autopr/issue-<work-item>-feature"
 }}
 
 commit_changes:
 
 {{
-  "message": "Add percentage calculation"
+  "commit_message": "Add the requested change"
 }}
 
 push_branch:
 
 {{
-  "branch_name": "autopr/issue-1-percentage"
+  "branch_name": "autopr/issue-<work-item>-feature"
 }}
 
 get_issue_details:
 
 {{
   "repo_name": "djrmgaming0-star/AUTOPR-DEMO",
-  "issue_number": 1
+  "issue_number": <locked work item number>
 }}
 
 create_pull_request:
@@ -765,18 +853,32 @@ Use the actual registered function arguments.
 {{
   "repo_name": "djrmgaming0-star/AUTOPR-DEMO",
   "title": "Add percentage calculation",
-  "body": "Implements #1",
-  "branch_name": "autopr/issue-1-percentage",
-  "base": "main"
+  "body": "Implements the locked work item",
+  "branch_name": "autopr/issue-<work-item>-feature",
+  "base_branch": "main"
 }}
 
 add_issue_comment:
 
 {{
   "repo_name": "djrmgaming0-star/AUTOPR-DEMO",
-  "issue_number": 1,
+  "issue_number": <locked work item number>,
   "comment": "Implemented and validated."
 }}
+
+=========================================================
+WORK-ITEM SAFETY
+=========================================================
+
+The runtime locks the work item number and repository.
+
+Never call get_issue_details or add_issue_comment for a
+different issue number.
+
+Never create a pull request for a different repository.
+
+Do not use issue #1 as a default or example unless #1 is
+actually the locked work item.
 
 =========================================================
 GIT TOOL RECOVERY
@@ -1092,13 +1194,13 @@ AVAILABLE TOOLS
         if (
             action in self.VALIDATION_ACTIONS
             and count >= 2
-            and not self.has_written_changes
+            and self.validation_since_last_write >= 2
         ):
 
             return (
                 "The same validation command was already "
-                "executed multiple times without code changes. "
-                "Implement the requested change first."
+                "executed multiple times without a new write. "
+                "Do not repeat it; continue to the next workflow step."
             )
 
         return None
@@ -1211,6 +1313,7 @@ AVAILABLE TOOLS
         if action in self.VALIDATION_ACTIONS:
 
             self.consecutive_validation_runs += 1
+            self.validation_since_last_write += 1
 
         else:
 
@@ -1219,6 +1322,7 @@ AVAILABLE TOOLS
         if action in self.WRITE_ACTIONS:
 
             self.has_written_changes = True
+            self.validation_since_last_write = 0
 
         if action == "create_branch":
 
@@ -1259,10 +1363,10 @@ AVAILABLE TOOLS
             # Respect free-tier rate limits.
             delay = min(
                 max(
-                    15,
-                    10 * self.llm_failures,
+                    30,
+                    15 * self.llm_failures,
                 ),
-                60,
+                90,
             )
 
         else:
@@ -1321,6 +1425,11 @@ AVAILABLE TOOLS
         self.has_created_pr = False
 
         self.llm_failures = 0
+        self.validation_since_last_write = 0
+
+        # Lock the configured work item/repository before asking
+        # Gemini for its first action.
+        self._extract_run_context(initial_prompt)
 
         # =====================================================
         # AGENT LOOP
